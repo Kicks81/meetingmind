@@ -104,6 +104,30 @@
     });
   }
 
+  // ── Output-language pinning (Z4) ─────────────────────────────────────────
+  // Without an explicit instruction, LLMs tend to answer in English even for
+  // Chinese meetings. Classify the speech's dominant script and produce the
+  // instruction line appended to summary/Q&A/title prompts.
+  function dominantLanguage(text) {
+    const cjk = (text.match(CJK_CHARS) || []).length;
+    const latin = (text.match(/[a-zA-Z]/g) || []).length;
+    if (!cjk && !latin) return 'en';
+    const share = cjk / (cjk + latin);
+    if (share >= 0.7) return 'zh';
+    if (share <= 0.3) return 'en';
+    return 'mixed';
+  }
+
+  const LANGUAGE_INSTRUCTIONS = {
+    zh: 'Respond in Chinese (中文). Keep proper names and technical terms in their original language.',
+    en: 'Respond in English.',
+    mixed: 'Respond in the same mix of Chinese and English as the speech — Chinese for discussion, keeping English names and technical terms as-is.',
+  };
+
+  function languageInstruction(text) {
+    return LANGUAGE_INSTRUCTIONS[dominantLanguage(text)];
+  }
+
   // ── Correction dictionary (fix recurring ASR mis-transcriptions) ────────
   // corrections: [{ wrong, right }]. Longest `wrong` wins first so an entry
   // like "chata chataly" is fixed before a shorter overlapping "chata".
@@ -187,6 +211,8 @@
   }
 
   return {
+    dominantLanguage,
+    languageInstruction,
     applyCorrections,
     normalizeVaultName,
     extractVaultFolders,

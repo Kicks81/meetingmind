@@ -612,7 +612,7 @@
     const messages = [
       {
         role: 'system',
-        content: 'You are a concise meeting assistant. Given new meeting speech, summarise the key points just discussed as short bullet points. Use short, simple, plain language — no jargon, no long sentences. Each bullet is one line starting with "- ". Wrap genuinely key or repeated words/terms in **double asterisks** so they can be highlighted — only the important ones, not every line.'
+        content: 'You are a concise meeting assistant. Given new meeting speech, summarise the key points just discussed as short bullet points. Use short, simple, plain language — no jargon, no long sentences. Each bullet is one line starting with "- ". Wrap genuinely key or repeated words/terms in **double asterisks** so they can be highlighted — only the important ones, not every line. ' + MeetingCore.languageInstruction(newText)
       },
       {
         role: 'user',
@@ -745,7 +745,7 @@
     const messages = [
       {
         role: 'system',
-        content: 'You are a knowledgeable meeting assistant. A question was just asked during a meeting. Answer as 1-3 short bullet points using short, simple, plain language — no jargon, no long sentences. Each bullet starts with "- ". Wrap genuinely key terms in **double asterisks** to highlight them — only the important ones. Use the live meeting context and any relevant vault notes below — prefer the vault notes for factual or historical details they cover.'
+        content: 'You are a knowledgeable meeting assistant. A question was just asked during a meeting. Answer as 1-3 short bullet points using short, simple, plain language — no jargon, no long sentences. Each bullet starts with "- ". Wrap genuinely key terms in **double asterisks** to highlight them — only the important ones. Use the live meeting context and any relevant vault notes below — prefer the vault notes for factual or historical details they cover. ' + MeetingCore.languageInstruction(question)
       },
       {
         role: 'user',
@@ -1188,7 +1188,7 @@
     const messages = [
       {
         role: 'system',
-        content: 'You generate short filenames for meeting notes. Reply with ONLY a concise 3-7 word title — no punctuation, no quotes, no file extension, no explanation.'
+        content: 'You generate short filenames for meeting notes. Reply with ONLY a concise 3-7 word title — no punctuation, no quotes, no file extension, no explanation. ' + MeetingCore.languageInstruction(content)
       },
       { role: 'user', content: `Meeting content:\n${content.slice(0, 3000)}\n\nGenerate a short title for this meeting.` }
     ];

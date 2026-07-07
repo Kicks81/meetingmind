@@ -147,6 +147,34 @@ check('mixed: latin term in a zh question still matches, ranked first',
   core.searchVault('AFO的负责人是谁？', NOTES).map(r => r.path),
   ['projects/afo.md', 'zh/预算.md']); // zh note now also matches via 负责 bigram (Z3) — AFO note must stay ranked first
 
+// ── dominantLanguage / languageInstruction (Z4) ────────────────────────────
+check('lang: pure zh classified zh',
+  core.dominantLanguage('我们今天讨论项目预算的安排。'),
+  'zh');
+
+check('lang: pure en classified en',
+  core.dominantLanguage('Let us review the budget for next quarter.'),
+  'en');
+
+check('lang: heavy code-switching classified mixed',
+  core.dominantLanguage('这个sprint的retro我们讨论一下deployment的问题'),
+  'mixed');
+
+check('lang: zh with a few en terms still zh',
+  core.dominantLanguage('我们讨论一下AFO项目的预算和时间表，还有人员的安排问题'),
+  'zh');
+
+check('lang: empty/neutral text defaults to en',
+  core.dominantLanguage('123 456!'),
+  'en');
+
+check('lang: instruction exists for every class',
+  ['zh', 'en', 'mixed'].every(l => {
+    const samples = { zh: '我们讨论预算问题啊', en: 'discuss the budget', mixed: '讨论budget的roadmap计划' };
+    return typeof core.languageInstruction(samples[l]) === 'string' && core.languageInstruction(samples[l]).length > 0;
+  }),
+  true);
+
 // ── applyCorrections (ASR correction dictionary) ───────────────────────────
 const DICT = [
   { wrong: 'chata chataly', right: 'Swetha' },

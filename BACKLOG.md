@@ -5,9 +5,6 @@ The loop always takes the top unchecked item. Add new findings to the right tier
 never silently delete an item — strike it through with a reason.
 
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
-- [ ] **Z4. LLM prompts don't pin output language.** Summaries/answers/titles should
-  respond in the meeting's dominant language (or mirror mixed zh-en). Add explicit
-  instruction + detect dominant script of the batch.
 
 ## P1 — Data safety & reliability
 - [ ] **R1. A page refresh/crash loses the entire meeting.** All state lives in the DOM.
@@ -38,6 +35,10 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **Z4. Output language pinned to the speech.** dominantLanguage() classifies each
+  batch/question/title source as zh / en / mixed by CJK-vs-Latin share (≥70% zh, ≤30%
+  en, else mixed); the matching instruction is appended to summary, Q&A, and title
+  prompts. P0 is now empty — Chinese/English correctness backlog cleared. (commit `Z4:`)
 - [x] **Z3. Chinese vault search.** Query tokenizer now emits CJK character bigrams
   (function-char bigrams like 的/是/谁 filtered) alongside Latin words; Latin terms
   score 2×. Chinese questions now retrieve zh vault notes; mixed queries rank the
