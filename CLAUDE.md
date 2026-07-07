@@ -25,6 +25,11 @@ standard**, with first-class **Chinese + English (incl. code-switching)** suppor
 - The relay stays a dumb pipe — no protocol logic in relay.js.
 - API keys are user-supplied at runtime; never hardcode keys.
 
+## Developer onboarding
+[DEVELOPMENT.md](DEVELOPMENT.md) records every architecture decision and its
+rationale (D1–D12), known sharp edges, and the eval philosophy — read it before
+changing anything non-trivial.
+
 ## Continuous improvement loop
 See [IMPROVEMENT_LOOP.md](IMPROVEMENT_LOOP.md) for the iteration protocol and
 [BACKLOG.md](BACKLOG.md) for the prioritized work queue. One iteration = pick top

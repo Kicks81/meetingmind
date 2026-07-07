@@ -1,0 +1,182 @@
+# MeetingMind — Developer Notes: Architecture, Rationale & Decisions
+
+For the next developer (human or AI). This documents **why** things are the way they
+are, so you don't undo a deliberate decision or re-fight a battle that's already been
+lost once. Read [CLAUDE.md](CLAUDE.md) for hard constraints, [BACKLOG.md](BACKLOG.md)
+for what's next, [IMPROVEMENT_LOOP.md](IMPROVEMENT_LOOP.md) for how changes get made.
+
+---
+
+## 1. What this product is
+
+A local, single-user Granola replacement: live meeting transcription (mic + system
+audio), rolling LLM summaries, automatic + manual Q&A grounded in the user's Obsidian
+vault, and export into Obsidian — with **first-class Chinese + English support,
+including code-switching**, which is the product's key edge over Granola.
+
+The primary user runs Windows 11 + Chrome, keeps notes in an Obsidian vault, and
+attends meetings in mixed zh/en (Singapore business context).
+
+## 2. File map
+
+| File | Role |
+|---|---|
+| [meeting.html](meeting.html) | The entire app: UI, audio capture, BytePlus binary protocol, LLM calls, Obsidian export. No build step. |
+| [core.js](core.js) | Pure text-processing logic (UMD). Loaded by meeting.html **and** by the Node eval harness. No DOM, no network, no timers — keep it that way. |
+| [relay.js](relay.js) | Node WebSocket relay + static file server. Dumb byte pipe to BytePlus. |
+| [evals/run.mjs](evals/run.mjs) | Regression suite for core.js (zh / en / mixed fixtures). `node evals/run.mjs` |
+| [start.bat](start.bat) | One-click startup: installs `ws`, starts relay, opens Chrome at localhost. |
+
+## 3. Architecture decisions & rationale
+
+### D1. Single HTML file, no build step
+The user opens the app directly; there is no deploy pipeline, bundler, or framework.
+This is deliberate: the whole product must be runnable by double-clicking `start.bat`
+on a corporate Windows laptop with only Node + Chrome installed. Resist the urge to
+introduce npm build tooling — every dependency is a support burden on a machine we
+don't control. `core.js` was split out **only** because testability required it
+(Node can't import from an HTML file); it uses a UMD wrapper so both environments
+load the same file unmodified.
+
+### D2. The relay is a dumb pipe (and also the web server)
+Browsers cannot set HTTP headers (`X-Api-Key` etc.) on a WebSocket handshake, and
+BytePlus requires them — hence the relay. It deliberately contains **zero protocol
+logic**: it forwards opaque bytes both ways. All BytePlus framing (gzip, binary
+headers, sequence flags) lives in meeting.html, so protocol bugs are debuggable in
+one place, in DevTools.
+
+The relay also serves meeting.html/core.js over `http://localhost:8765`. Reason:
+Chrome **refuses to persist microphone permission for `file://` pages**, which forced
+a permission prompt on every single meeting. Serving from a localhost origin makes
+"Allow while visiting the site" stick permanently. Static serving is infrastructure,
+not protocol logic — it does not violate the dumb-pipe rule.
+
+### D3. BytePlus Seed-ASR (`bigmodel_async`) for speech
+Chosen because it is one of the few streaming ASRs genuinely strong at zh/en
+**code-switching** (mid-sentence language changes), which Web Speech API and most
+Western ASRs handle poorly. Details that matter:
+- 16 kHz PCM16 mono, gzip-framed binary protocol (implemented in meeting.html).
+- `end_window_size: 800` controls utterance finalisation latency.
+- **Hotwords** (`request.corpus.context`) bias recognition toward names/jargon —
+  the correction dictionary's "right" terms are auto-fed here (see D8).
+- Each new session numbers utterances from 0 — on reconnect you MUST reset
+  `finalizedUtteranceCount` or segments get skipped/duplicated.
+- BytePlus kills sessions that receive no audio within ~8s of opening. That's why
+  all audio-capture setup (including the user-facing share picker!) happens BEFORE
+  the socket opens.
+
+### D4. OpenRouter for LLM, user-selectable model
+One API for many models lets the user trade cost/speed/quality per meeting.
+DeepSeek V4 Flash is the recommended default for zh-heavy meetings (zh-native,
+cheap, fast). All calls stream (`stream: true`) into the DOM for perceived speed.
+`max_tokens` is 512 for rolling summaries/answers, 1200 for the final synthesis.
+
+### D5. Obsidian export via `obsidian://new` URIs — and its landmines
+There is no filesystem access from the browser, and no Obsidian REST API without
+plugins the user would have to install. The URI scheme is the zero-setup path, but
+it has sharp edges (all discovered the hard way):
+- **~30k char URI limit.** One meeting = one note, grown via `append=true` chunks.
+  Anything bigger than one URI is **bisected** into multiple appends, sent ~600ms
+  apart (Obsidian drops rapid back-to-back protocol navigations).
+- **Never fall back to silent downloads.** The original fallback downloaded a .md
+  with only a console.warn — the user lost days of notes to it before noticing.
+  If a single element is genuinely too big for a URI, download it AND `alert()`.
+- **Vault NAME, not path.** `vault=` takes the name; users paste paths, so
+  `normalizeVaultName()` reduces a path to its basename.
+- **Manual encoding.** `encodeURIComponent`, not `URLSearchParams` — the latter
+  encodes spaces as `+`, which Obsidian does not decode back.
+- **Fire-and-forget.** There is NO acknowledgement that Obsidian received a URI.
+  Export state (`data-obsidian-exported`) is optimistic; that's why "Add to
+  Obsidian" offers a full re-send when everything is already marked exported.
+
+### D6. CJK-aware text processing (the reason core.js exists)
+Chinese has no spaces and different punctuation. Every text function has an
+explicit CJK strategy, and each was a real bug once:
+- **Question detection**: matches `？` as well as `?`; treats `。！？` as sentence
+  boundaries; lower min-length floor for CJK (a real zh question can be 5 chars).
+- **Word counting**: CJK characters count ÷2 (avg zh word ≈ 2 chars) + Latin word
+  tokens. Whitespace splitting counted a whole zh utterance as "1 word", so the
+  80-word summary trigger *never fired* in Chinese meetings.
+- **Vault search**: CJK query terms become character **bigrams** (zh words are
+  mostly 2 chars); bigrams containing function characters (的/是/谁…) are dropped
+  as noise; Latin terms score 2× a bigram so exact terms rank first.
+- **Language pinning**: LLMs answer in English by default. `dominantLanguage()`
+  classifies each batch by CJK share (≥70% zh, ≤30% en, else mixed) and appends a
+  response-language instruction to every prompt.
+
+**Rule: any new text-processing logic goes in core.js with zh + en + mixed
+fixtures in evals/run.mjs, or it will regress.** This is enforced by culture, not
+tooling — keep the culture.
+
+### D7. Eval harness philosophy
+`evals/run.mjs` is dependency-free Node (no test framework — nothing to install).
+Two assertion types:
+- `check(name, actual, expected)` — normal regression fixture. Never delete one;
+  update an expectation only when behaviour intentionally improves.
+- `expectFail(name, actual, desired)` — documents a **known bug**: it passes while
+  the bug exists and fails loudly the moment the behaviour is fixed, forcing the
+  fixture to be promoted to `check()` in the same change. This is the ratchet that
+  kept the Z1–Z3 Chinese bugs from being forgotten.
+It also greps meeting.html to ensure logic isn't duplicated inline again.
+
+### D8. Correction dictionary (ASR fix-ups) — two-layer design
+ASR consistently mis-hears names ("Swetha" → "chata chataly"). Fixes are applied at
+two layers on purpose:
+1. **Post-ASR text substitution** (core.applyCorrections): longest-wrong-first;
+   Latin = case-insensitive with per-edge word boundaries (a `\b` is only added
+   next to a word char, so "a.f.o." still matches); CJK = plain substring (no \b
+   in CJK). Runs *before* summaries/Q&A/export see the text.
+2. **ASR biasing**: every correction's "right" term is merged into the BytePlus
+   hotword list at session start, so recognition itself improves over time.
+Stored in localStorage (`meetingmind_corrections`). UI: select text → ✏️ Fix;
+manage via the 📖 button.
+
+### D9. Crash-safety via localStorage snapshots (not IndexedDB)
+The whole session serialises to ONE localStorage key every 5s + on `beforeunload`,
+with restore offered on load. localStorage was chosen over IndexedDB deliberately:
+synchronous, 3 lines of code, and a 2-hour meeting serialises to ~200KB — nowhere
+near the ~5MB quota. If multi-meeting history is ever added (backlog), migrate to
+IndexedDB then, not before. The snapshot includes export flags and the Obsidian
+note path so a restored session continues appending to the *same* note.
+
+### D10. Auto-reconnect keeps the audio graph alive
+On mid-meeting socket drop: retry with 1s→15s backoff while `isRecording`. The Web
+Audio graph is left running throughout — only the socket is rebuilt — so the gap in
+the transcript is just the disconnected seconds, not a mic re-permission or picker
+re-prompt. `asrReady` gates the audio sender; `asrReconnecting` prevents loop pile-up.
+
+### D11. UI decisions worth knowing
+- **Summary panel gets ~2/3 width** and unconditional auto-scroll
+  (`data-autoscroll="always"`); the transcript keeps *conditional* auto-scroll so
+  users can scroll back to select/fix text without the panel jumping away.
+- After streaming finishes, the plain streamed text is swapped for rendered
+  markdown, which is TALLER — you must re-pin scroll after that swap.
+- Markdown rendering happens once at stream end (not per-token) so a half-streamed
+  `**` never renders broken.
+- ScriptProcessorNode is deprecated but kept for now (works everywhere, one code
+  path); AudioWorklet migration is backlog L1 — do it in one dedicated change.
+
+### D12. Keys & config
+API keys are user-supplied at runtime, persisted per-origin in localStorage, and
+optionally exported to a JSON file (Save/Load Config) because corporate browser
+policies sometimes wipe site data. The config file is plaintext — encrypting it is
+backlog L2. **Never hardcode keys anywhere, including tests.**
+
+## 4. Known limitations / sharp edges (as of 2026-07-07)
+- The screen-share picker for system audio cannot be skipped (Chrome security);
+  the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
+  the system-audio dropdown, whose permission persists.
+- Obsidian hand-off has no receipt (see D5) — full re-send is the recovery path.
+- zh questions ending without `？` (…吗 punctuated with `。` by the ASR) are missed
+  by regex detection; acceptable so far, LLM-side catch is a backlog option.
+- `meetingContext` grows unboundedly during very long meetings (backlog R3).
+- One meeting at a time; no history browser (autosave holds only the latest session).
+- Evals cover core.js logic + a few DOM-wiring greps; audio/ASR paths need a live
+  BytePlus key and are manually tested only.
+
+## 5. How to keep improving
+Run the loop: pick the top of [BACKLOG.md](BACKLOG.md) → implement → verify
+(`node evals/run.mjs` + browser check; add zh/en/mixed fixtures for any text-logic
+change) → one commit per item (`<id>: summary`) → move the item to Done with notes.
+Details in [IMPROVEMENT_LOOP.md](IMPROVEMENT_LOOP.md), which also has the
+"better than Granola" scorecard — re-score it whenever P0/P1 empties.
