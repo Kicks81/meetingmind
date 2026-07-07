@@ -35,6 +35,13 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **U1. One-time (not per-meeting) mic permission.** Root cause: Chrome never
+  persists mic permission for file:// pages. relay.js now also serves meeting.html
+  + core.js at http://localhost:8765 (static serving only — ASR relaying unchanged),
+  and start.bat opens that URL. Click "Allow while visiting the site" once and the
+  prompt never returns. Screen-share picker is a Chrome security requirement and
+  cannot be skipped — the existing system-audio *device* dropdown (e.g. VB-Cable)
+  is the no-picker path, and its permission now persists too. (commit `U1:`)
 - [x] **Z4. Output language pinned to the speech.** dominantLanguage() classifies each
   batch/question/title source as zh / en / mixed by CJK-vs-Latin share (≥70% zh, ≤30%
   en, else mixed); the matching instruction is appended to summary, Q&A, and title

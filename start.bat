@@ -18,19 +18,22 @@ start "MeetingMind Relay" cmd /k node relay.js
 
 timeout /t 2 /nobreak >nul
 
+rem Open via http://localhost (NOT file://) so Chrome remembers the mic
+rem permission across meetings instead of re-prompting every time.
+set APP_URL=http://localhost:8765/
 echo Opening MeetingMind in Chrome...
 where chrome >nul 2>nul
 if %errorlevel%==0 (
-    start chrome "%~dp0meeting.html"
+    start chrome "%APP_URL%"
 ) else if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" (
-    start "" "%ProgramFiles%\Google\Chrome\Application\chrome.exe" "%~dp0meeting.html"
+    start "" "%ProgramFiles%\Google\Chrome\Application\chrome.exe" "%APP_URL%"
 ) else if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" (
-    start "" "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" "%~dp0meeting.html"
+    start "" "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" "%APP_URL%"
 ) else if exist "%LocalAppData%\Google\Chrome\Application\chrome.exe" (
-    start "" "%LocalAppData%\Google\Chrome\Application\chrome.exe" "%~dp0meeting.html"
+    start "" "%LocalAppData%\Google\Chrome\Application\chrome.exe" "%APP_URL%"
 ) else (
     echo Chrome not found in common locations - opening with your default browser instead.
-    start "" "%~dp0meeting.html"
+    start "" "%APP_URL%"
 )
 
 endlocal

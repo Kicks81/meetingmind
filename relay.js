@@ -14,12 +14,39 @@
 
 const { WebSocketServer, WebSocket } = require('ws');
 const crypto = require('crypto');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = process.argv[2] ? parseInt(process.argv[2], 10) : 8765;
 const UPSTREAM_BASE = 'wss://voice.ap-southeast-1.bytepluses.com/api/v3/sauc';
 
-const wss = new WebSocketServer({ port: PORT });
-console.log(`MeetingMind ASR relay listening on ws://localhost:${PORT}`);
+// Serve the app itself over http://localhost so Chrome PERSISTS mic
+// permissions ("Allow while visiting the site") — file:// pages get
+// re-prompted on every single meeting. Static serving only; the ASR
+// relaying below stays a dumb byte pipe.
+const STATIC_FILES = {
+  '/': 'meeting.html',
+  '/meeting.html': 'meeting.html',
+  '/core.js': 'core.js',
+};
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
+
+const httpServer = http.createServer((req, res) => {
+  const file = STATIC_FILES[req.url.split('?')[0]];
+  if (!file) { res.writeHead(404); res.end('not found'); return; }
+  const filePath = path.join(__dirname, file);
+  fs.readFile(filePath, (err, data) => {
+    if (err) { res.writeHead(500); res.end('read error'); return; }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    res.end(data);
+  });
+});
+
+const wss = new WebSocketServer({ server: httpServer });
+httpServer.listen(PORT, () => {
+  console.log(`MeetingMind running at http://localhost:${PORT} (ASR relay on the same port)`);
+});
 
 wss.on('connection', (client) => {
   let upstream = null;
