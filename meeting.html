@@ -480,6 +480,117 @@
   // ── Obsidian vault index (in-memory, keyword search) ─────────────────────
   let vaultNotes = []; // { path, content }
 
+  // ── Crash-safe autosave (R1) ──────────────────────────────────────────────
+  // Everything lives in the DOM, so a refresh/crash used to lose the whole
+  // meeting. Snapshot the full session to localStorage every few seconds;
+  // on load, offer to restore. Cleared by the Clear button only — surviving
+  // a stop/export is intentional (the user may still want a re-send).
+  const AUTOSAVE_KEY = 'meetingmind_autosave';
+
+  function snapshotState() {
+    return {
+      v: 1,
+      savedAt: Date.now(),
+      segments: [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')].map(el => ({
+        t: el.querySelector('.transcript-time').textContent,
+        x: el.querySelector('.seg-text').textContent,
+        e: el.dataset.obsidianExported ? 1 : 0
+      })),
+      summaries: [...document.querySelectorAll('#summaryPanel .summary-block')].map(el => ({
+        l: el.querySelector('.summary-label').textContent,
+        h: el.querySelector('.summary-text').innerHTML,
+        e: el.dataset.obsidianExported ? 1 : 0
+      })),
+      qas: [...document.querySelectorAll('#qaPanel .qa-card')].map(el => ({
+        q: el.querySelector('.qa-question').textContent,
+        h: el.querySelector('.qa-answer').innerHTML,
+        e: el.dataset.obsidianExported ? 1 : 0
+      })),
+      meetingContext, finalTranscript, pendingText,
+      counters: { segmentCount, summaryCount, qaCount, totalWords },
+      obsidian: { notePath: obsidianNotePath, title: obsidianMeetingTitle, chunk: obsidianChunkNumber }
+    };
+  }
+
+  let lastAutosaveJson = '';
+  function autosave() {
+    try {
+      const snap = snapshotState();
+      if (!snap.segments.length && !snap.summaries.length && !snap.qas.length) return;
+      const json = JSON.stringify(snap);
+      if (json === lastAutosaveJson) return; // nothing changed
+      lastAutosaveJson = json;
+      localStorage.setItem(AUTOSAVE_KEY, json);
+    } catch (err) {
+      console.warn('Autosave failed:', err.message);
+    }
+  }
+  setInterval(autosave, 5000);
+  window.addEventListener('beforeunload', autosave);
+
+  function restoreFromAutosave() {
+    let snap;
+    try { snap = JSON.parse(localStorage.getItem(AUTOSAVE_KEY)); } catch {}
+    if (!snap || !snap.segments) return false;
+
+    const age = Math.round((Date.now() - snap.savedAt) / 60000);
+    if (!confirm(`Found an unsaved meeting from ${age < 60 ? age + ' min' : Math.round(age / 60) + ' h'} ago (${snap.segments.length} segments, ${snap.summaries.length} summaries).\n\nRestore it?`)) {
+      return false; // kept in storage — user can still restore after a reload
+    }
+
+    const tPanel = document.getElementById('transcriptPanel');
+    tPanel.innerHTML = '';
+    for (const s of snap.segments) {
+      const el = document.createElement('div');
+      el.className = 'transcript-segment final';
+      el.innerHTML = `<div class="transcript-time">${escapeHtml(s.t)}</div><div class="seg-text">${escapeHtml(s.x)}</div>`;
+      if (s.e) el.dataset.obsidianExported = '1';
+      const del = document.createElement('button');
+      del.className = 'seg-delete'; del.textContent = '✕';
+      del.onclick = () => deleteSegment(el);
+      el.appendChild(del);
+      tPanel.appendChild(el);
+    }
+
+    const sPanel = document.getElementById('summaryPanel');
+    sPanel.innerHTML = '';
+    for (const s of snap.summaries) {
+      const el = document.createElement('div');
+      el.className = 'summary-block';
+      el.innerHTML = `<div class="summary-label">${escapeHtml(s.l)}</div><div class="summary-text">${s.h}</div>`;
+      if (s.e) el.dataset.obsidianExported = '1';
+      sPanel.appendChild(el);
+    }
+
+    const qPanel = document.getElementById('qaPanel');
+    qPanel.innerHTML = '';
+    for (const s of snap.qas) {
+      const el = document.createElement('div');
+      el.className = 'qa-card';
+      el.innerHTML = `<div class="qa-question">${escapeHtml(s.q)}</div><div class="qa-answer">${s.h}</div>`;
+      if (s.e) el.dataset.obsidianExported = '1';
+      qPanel.appendChild(el);
+      seenQuestions.add(MeetingCore.questionKey(s.q));
+    }
+
+    meetingContext = snap.meetingContext || '';
+    finalTranscript = snap.finalTranscript || '';
+    pendingText = snap.pendingText || '';
+    ({ segmentCount, summaryCount, qaCount, totalWords } = snap.counters);
+    obsidianNotePath = snap.obsidian.notePath;
+    obsidianMeetingTitle = snap.obsidian.title;
+    obsidianChunkNumber = snap.obsidian.chunk || 1;
+
+    document.getElementById('segCount').textContent = segmentCount;
+    document.getElementById('summaryCount').textContent = summaryCount;
+    document.getElementById('qaCount').textContent = qaCount;
+    document.getElementById('wordCount').textContent = `${totalWords} words transcribed`;
+    [tPanel, sPanel, qPanel].forEach(p => { p.scrollTop = p.scrollHeight; });
+    return true;
+  }
+
+  window.addEventListener('load', () => { restoreFromAutosave(); });
+
   // ── Correction dictionary (persistent ASR fix-ups) ───────────────────────
   const CORRECTIONS_KEY = 'meetingmind_corrections';
   let corrections = [];
@@ -1277,6 +1388,8 @@
     meetingContext = '';
     segmentCount = 0; summaryCount = 0; qaCount = 0; totalWords = 0;
     seenQuestions.clear();
+    localStorage.removeItem(AUTOSAVE_KEY);
+    lastAutosaveJson = '';
     obsidianNotePath = null;
     obsidianMeetingTitle = null;
     obsidianChunkNumber = 1;
