@@ -35,6 +35,11 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **U2. Re-send meeting to Obsidian.** Chunks are flagged "exported" when the
+  obsidian:// URI launches, but the hand-off is fire-and-forget — a wrong vault name
+  at export time silently loses the note while the app thinks it's sent. "Add to
+  Obsidian" now offers a full re-send (fresh note, all chunks) when everything is
+  already marked exported. (commit `U2:`)
 - [x] **U1. One-time (not per-meeting) mic permission.** Root cause: Chrome never
   persists mic permission for file:// pages. relay.js now also serves meeting.html
   + core.js at http://localhost:8765 (static serving only — ASR relaying unchanged),

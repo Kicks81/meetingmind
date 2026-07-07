@@ -1322,12 +1322,32 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   }
 
   // Manual button — sends whatever hasn't been exported yet as the next
-  // (or first) chunk appended into the meeting's note.
+  // (or first) chunk appended into the meeting's note. If everything is
+  // already marked exported, offer a full re-send: chunks get flagged as
+  // exported when the obsidian:// URI is *launched*, but the hand-off is
+  // fire-and-forget — if Obsidian rejected it (e.g. wrong vault name at the
+  // time), the flags lie and the user needs a way to send it all again.
   async function addToObsidian() {
     const vault = document.getElementById('obsidianVault').value.trim();
     if (!vault) { alert('Please enter your Obsidian vault name first.'); return; }
     const sent = await sendObsidianChunk();
-    if (!sent) alert('Nothing new to send — everything so far has already been exported to Obsidian.');
+    if (sent) return;
+
+    const hasContent = document.querySelector('#transcriptPanel .transcript-segment.final, #summaryPanel .summary-block, #qaPanel .qa-card');
+    if (!hasContent) { alert('Nothing to send yet — the meeting has no content.'); return; }
+
+    if (confirm('Everything is already marked as exported.\n\nIf the note is missing in Obsidian (e.g. the vault name was wrong during the meeting), click OK to RE-SEND the entire meeting as a fresh note.')) {
+      document.querySelectorAll('[data-obsidian-exported]').forEach(el => delete el.dataset.obsidianExported);
+      obsidianNotePath = null;
+      obsidianMeetingTitle = null;
+      obsidianChunkNumber = 1;
+      await sendObsidianChunk();
+      // Long meetings exceed one URI — keep sending until nothing is left.
+      while (document.querySelector('#transcriptPanel .transcript-segment.final:not([data-obsidian-exported])')) {
+        const more = await sendObsidianChunk();
+        if (!more) break;
+      }
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
