@@ -670,6 +670,7 @@
   let muteNode = null;
   let finalizedUtteranceCount = 0;
   let interimEl = null;
+  let asrReady = false; // true only while a BytePlus session is accepting audio
 
   const ASR_MODE = 'bigmodel_async';
   const ASR_RESOURCE_ID = 'volc.seedasr.sauc.duration';
@@ -1191,19 +1192,25 @@
     muteNode.connect(audioCtx.destination);
 
     // The audio graph is now fully built and already producing samples —
-    // gate actual sending on this flag rather than on `isRecording` (which
+    // gate actual sending on asrReady rather than on `isRecording` (which
     // the caller only sets true after this whole function resolves) so we
     // start streaming the instant BytePlus's session is ready, not later.
-    let audioReadyToSend = false;
     processorNode.onaudioprocess = (e) => {
-      if (!audioReadyToSend) return;
+      if (!asrReady || !asrSocket || asrSocket.readyState !== WebSocket.OPEN) return;
       sendAudioChunk(floatTo16BitPCM(e.inputBuffer.getChannelData(0)), false);
     };
 
+    await openAsrSession(apiKey, relayUrl);
+  }
+
+  // Opens one relay→BytePlus session and resolves when it's ready for
+  // audio. An unexpected mid-meeting close triggers the reconnect loop.
+  function openAsrSession(apiKey, relayUrl) {
+    finalizedUtteranceCount = 0; // each BytePlus session numbers utterances from scratch
     asrSocket = new WebSocket(relayUrl);
     asrSocket.binaryType = 'arraybuffer';
 
-    await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       asrSocket.onerror = () => reject(new Error(`Could not reach the ASR relay at ${relayUrl}. Start it with "node relay.js" first.`));
       asrSocket.onclose = () => reject(new Error('ASR relay connection closed before it was ready.'));
       asrSocket.onopen = () => {
@@ -1214,9 +1221,12 @@
         const msg = JSON.parse(e.data);
         if (msg.type === 'ready') {
           asrSocket.onmessage = (ev) => handleAsrFrame(ev.data);
-          asrSocket.onclose = () => { if (isRecording) console.warn('ASR relay connection closed unexpectedly'); };
+          asrSocket.onclose = () => {
+            asrReady = false;
+            if (isRecording) scheduleAsrReconnect(apiKey, relayUrl);
+          };
           await sendFullClientRequest();
-          audioReadyToSend = true;
+          asrReady = true;
           resolve();
         } else if (msg.type === 'error') {
           reject(new Error('BytePlus ASR error: ' + msg.message));
@@ -1225,7 +1235,35 @@
     });
   }
 
+  // Mid-meeting connection drops (relay restart, network blip, BytePlus
+  // closing an idle session) used to kill recording silently. Retry with
+  // backoff for as long as the meeting is running; audio capture keeps
+  // going locally the whole time — only the unsent seconds are lost.
+  let asrReconnecting = false;
+  async function scheduleAsrReconnect(apiKey, relayUrl) {
+    if (asrReconnecting) return;
+    asrReconnecting = true;
+    const delays = [1000, 2000, 4000, 8000, 15000];
+    for (let attempt = 0; isRecording; attempt++) {
+      const delay = delays[Math.min(attempt, delays.length - 1)];
+      document.getElementById('statusText').textContent = `Reconnecting ASR (attempt ${attempt + 1})...`;
+      await new Promise(r => setTimeout(r, delay));
+      if (!isRecording) break;
+      try {
+        await openAsrSession(apiKey, relayUrl);
+        document.getElementById('statusText').textContent = 'Recording';
+        console.log('ASR reconnected after', attempt + 1, 'attempt(s)');
+        break;
+      } catch (err) {
+        console.warn('ASR reconnect attempt failed:', err.message);
+      }
+    }
+    if (!isRecording) document.getElementById('statusText').textContent = 'Stopped';
+    asrReconnecting = false;
+  }
+
   async function stopRecognition() {
+    asrReady = false;
     if (processorNode) { processorNode.onaudioprocess = null; processorNode.disconnect(); processorNode = null; }
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
     if (systemSourceNode) { systemSourceNode.disconnect(); systemSourceNode = null; }
