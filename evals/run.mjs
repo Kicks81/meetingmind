@@ -135,6 +135,23 @@ check('mixed: latin term in a zh question still matches',
   core.searchVault('AFO的负责人是谁？', NOTES).map(r => r.path),
   ['projects/afo.md']);
 
+// ── normalizeVaultName ─────────────────────────────────────────────────────
+check('vault: plain name passes through',
+  core.normalizeVaultName('Chee Kuang x incorp'),
+  'Chee Kuang x incorp');
+
+check('vault: windows path reduced to vault name',
+  core.normalizeVaultName('C:\\Users\\CheeKuangTan\\obsidian\\Chee Kuang x incorp'),
+  'Chee Kuang x incorp');
+
+check('vault: forward-slash path and trailing slash handled',
+  core.normalizeVaultName('/home/user/obsidian/Chee Kuang x incorp/'),
+  'Chee Kuang x incorp');
+
+check('vault: whitespace trimmed',
+  core.normalizeVaultName('  Chee Kuang x incorp  '),
+  'Chee Kuang x incorp');
+
 // ── extractVaultFolders (Z2.5 folder picker) ───────────────────────────────
 check('folders: strips vault root, includes ancestors, sorts, dedupes',
   core.extractVaultFolders([

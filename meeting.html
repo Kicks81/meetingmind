@@ -1200,7 +1200,8 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   const OBSIDIAN_AUTO_SPLIT_THRESHOLD = OBSIDIAN_URI_LENGTH_LIMIT * 0.75; // leave headroom before hitting the hard limit
 
   async function sendObsidianChunk() {
-    const vault = document.getElementById('obsidianVault').value.trim();
+    // Tolerate a pasted vault *path* — Obsidian's URI needs the vault name.
+    const vault = MeetingCore.normalizeVaultName(document.getElementById('obsidianVault').value);
     if (!vault) return false;
 
     const chunk = await buildObsidianChunkMarkdown();

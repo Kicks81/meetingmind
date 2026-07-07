@@ -83,6 +83,14 @@
     });
   }
 
+  // ── Vault name normalisation ─────────────────────────────────────────────
+  // The obsidian:// URI wants the vault NAME, but users naturally paste the
+  // vault's full filesystem path — which makes Obsidian error with "Vault
+  // not found". If the value looks like a path, keep only the last segment.
+  function normalizeVaultName(value) {
+    return value.trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop().trim();
+  }
+
   // ── Vault folder listing (Obsidian export destination picker) ───────────
   // Input: webkitRelativePath strings from a directory picker pointed at the
   // vault root, e.g. "MyVault/Projects/Meeting Notes/2026-07/note.md".
@@ -132,6 +140,7 @@
   }
 
   return {
+    normalizeVaultName,
     extractVaultFolders,
     extractQuestions,
     questionKey,
