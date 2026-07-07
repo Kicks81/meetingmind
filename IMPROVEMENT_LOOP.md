@@ -44,8 +44,8 @@ Checklist to re-score at each re-audit:
 - [x] Live transcription (Granola: yes) — plus live streaming display Granola lacks
 - [x] Live rolling summaries (Granola: post-meeting only)
 - [x] In-meeting auto Q&A with personal-vault RAG (Granola: no)
-- [ ] Chinese + English + code-switching, end to end (Granola: weak — our key edge)
-- [ ] Post-meeting structured synthesis w/ action items (Granola: yes — we're behind)
+- [x] Chinese + English + code-switching, end to end (Granola: weak — our key edge)
+- [x] Post-meeting structured synthesis w/ action items (Granola: yes — parity)
 - [ ] User notes merged with transcript (Granola: yes — we're behind)
-- [ ] Crash-safe: no meeting ever lost (Granola: yes — we're behind)
-- [ ] Templates per meeting type (Granola: yes — we're behind)
+- [x] Crash-safe: no meeting ever lost (Granola: yes — parity)
+- [x] Templates per meeting type (Granola: yes — parity)

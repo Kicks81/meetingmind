@@ -230,6 +230,13 @@
     flex-shrink: 0;
   }
 
+  .summary-block.final-synthesis {
+    border-left-color: #a371f7;
+    background: #1a1530;
+  }
+
+  .summary-block.final-synthesis .summary-label { color: #a371f7; }
+
   .summary-block .summary-label {
     font-size: 11px;
     font-weight: 600;
@@ -682,7 +689,7 @@
   const COMP_NONE = 0b0000, COMP_GZIP = 0b0001;
 
   // ── OpenRouter call ──────────────────────────────────────────────────────
-  async function callOpenRouter(messages, signal) {
+  async function callOpenRouter(messages, signal, maxTokens = 512) {
     const key = document.getElementById('apiKey').value.trim();
     const model = document.getElementById('modelSelect').value;
     if (!key) return null;
@@ -695,7 +702,7 @@
         'HTTP-Referer': 'https://meetingmind.local',
         'X-Title': 'MeetingMind'
       },
-      body: JSON.stringify({ model, messages, max_tokens: 512, stream: true }),
+      body: JSON.stringify({ model, messages, max_tokens: maxTokens, stream: true }),
       signal
     });
 
@@ -708,8 +715,8 @@
   }
 
   // Stream response into an element
-  async function streamIntoElement(el, messages) {
-    const res = await callOpenRouter(messages);
+  async function streamIntoElement(el, messages, maxTokens = 512) {
+    const res = await callOpenRouter(messages, undefined, maxTokens);
     if (!res) { el.textContent = '(API error — check your key)'; return; }
 
     const reader = res.body.getReader();
@@ -793,6 +800,49 @@
       scrollToBottomIfNearBottom(panel);
     }
     clearProcessing();
+  }
+
+  // ── Post-meeting synthesis (G1) — the polished final note ───────────────
+  // Rolling updates are great live but aren't what you reread next week.
+  // On Stop, distill the whole meeting into one structured note (shaped by
+  // the selected template) — it lands in the summary panel and exports to
+  // Obsidian like any other block.
+  async function generateFinalSynthesis() {
+    const source = (meetingContext || finalTranscript).trim();
+    if (!source || !document.getElementById('apiKey').value.trim()) return;
+
+    const panel = document.getElementById('summaryPanel');
+    panel.querySelector('.empty-state')?.remove();
+    const block = document.createElement('div');
+    block.className = 'summary-block final-synthesis';
+    block.innerHTML = `<div class="summary-label">FINAL SUMMARY — ${timestamp()}</div><div class="summary-text"></div>`;
+    panel.appendChild(block);
+    scrollToBottomIfNearBottom(panel);
+
+    const textEl = block.querySelector('.summary-text');
+    setProcessing('Writing final summary...');
+
+    const template = SUMMARY_TEMPLATES[document.getElementById('summaryTemplate').value] || SUMMARY_TEMPLATES.general;
+    const messages = [
+      {
+        role: 'system',
+        content: 'The meeting just ended. Write the definitive meeting note from the running summary below. Structure it EXACTLY as these sections, each a bold heading line followed by "- " bullets (omit a section only if truly empty):\n**TL;DR** (2-3 bullets)\n**Decisions**\n**Action Items** (one bullet each: what — owner — due date if mentioned)\n**Open Questions**\nUse short plain language. Wrap key terms in **double asterisks**. '
+          + template + ' ' + MeetingCore.languageInstruction(source)
+      },
+      { role: 'user', content: `Running meeting summary:\n${source.slice(-12000)}` }
+    ];
+
+    const synthesis = await streamIntoElement(textEl, messages, 1200);
+    if (synthesis) {
+      textEl.innerHTML = formatSummaryHtml(synthesis);
+      scrollToBottomIfNearBottom(panel);
+      summaryCount++;
+      document.getElementById('summaryCount').textContent = summaryCount;
+    } else {
+      block.remove(); // API error — don't leave an empty purple shell
+    }
+    clearProcessing();
+    autosave();
   }
 
   // ── Obsidian folder picker (Z2.5) ────────────────────────────────────────
@@ -1409,6 +1459,9 @@
         await generateSummary(pendingText);
         pendingText = '';
       }
+
+      // The polished, structured final note (template-shaped).
+      await generateFinalSynthesis();
 
       // Ship whatever's left to Obsidian automatically — no manual click
       // needed; this is a silent no-op if no vault name is configured.

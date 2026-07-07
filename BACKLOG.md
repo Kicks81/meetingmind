@@ -7,20 +7,11 @@ never silently delete an item — strike it through with a reason.
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
 
 ## P1 — Data safety & reliability
-- [ ] **R1. A page refresh/crash loses the entire meeting.** All state lives in the DOM.
-  Autosave transcript/summaries/Q&A to localStorage or IndexedDB every few seconds;
-  offer restore on load.
-- [ ] **R2. No ASR reconnect.** If the relay/BytePlus socket drops mid-meeting, recording
-  silently dies (onclose only console.warns, meeting.html:986). Auto-reconnect with
-  backoff and a visible "reconnecting" status.
 - [ ] **R3. Unbounded meetingContext.** Rolling context grows forever and is resent on
   every summary/Q&A call — long meetings blow up cost/latency. Cap with a rolling
   condensation (summarize-the-summaries past ~3k chars).
 
 ## P2 — Granola-parity features (the "better than Granola" gap)
-- [ ] **G1. Post-meeting synthesis.** On Stop, generate a structured final note:
-  TL;DR, decisions, action items (owner + due), open questions, key topics. This is
-  Granola's core value and is currently missing entirely.
 - [ ] **G2. User notes pane.** Let the user jot rough notes during the meeting; merge
   them with the transcript in the final synthesis (Granola's signature interaction).
 - [ ] **G3b. Templates should also shape the final synthesis** once G1 exists (the
@@ -35,6 +26,17 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **R1. Crash-safe autosave.** Full session (transcript, summaries, Q&A, context,
+  export state) snapshots to localStorage every 5s + on unload; restore offered on
+  load; Clear wipes it. Verified across a real reload. (commit `R1:`)
+- [x] **R2. ASR auto-reconnect.** Mid-meeting socket drops now retry with backoff
+  (1s→15s) while recording, with "Reconnecting ASR…" status; each new BytePlus
+  session resets utterance numbering. Needs one live-meeting kill-the-relay test.
+  (commit `R2:`)
+- [x] **G1. Post-meeting synthesis.** On Stop: one structured FINAL SUMMARY block
+  (TL;DR / Decisions / Action Items with owners / Open Questions), shaped by the
+  selected template + meeting language, 1200-token budget, purple-accented in the
+  summary panel, included in the Obsidian export. (commit `G1:`)
 - [x] **U6. Small-talk removal.** Hover any transcript segment → ✕ deletes it.
   🧹 button in the transcript header batch-classifies un-exported segments via the
   LLM (conservative: only pure greetings/filler/goodbyes), previews what it found,
