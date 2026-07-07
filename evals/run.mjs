@@ -122,18 +122,30 @@ check('en: no match returns empty',
   core.searchVault('quarterly kubernetes migration?', NOTES),
   []);
 
-// Z3 — Chinese query terms are dropped by the tokenizer (backlog Z3)
-expectFail('zh: query matches the zh note [Z3]',
+// Z3 (fixed) — CJK queries tokenize as bigrams and match zh notes
+check('zh: query matches the zh note [Z3]',
   core.searchVault('项目预算谁负责审批？', NOTES).map(r => r.path),
   ['zh/预算.md']);
 
-expectFail('zh: tokenizer keeps CJK terms [Z3]',
+check('zh: tokenizer keeps CJK terms [Z3]',
   core.tokenizeQuery('项目预算谁负责？').length > 0,
   true);
 
-check('mixed: latin term in a zh question still matches',
+check('zh: function-char bigrams are filtered out [Z3]',
+  core.tokenizeQuery('这是谁的？'),
+  []);
+
+check('zh: single CJK char run kept as a term [Z3]',
+  core.tokenizeQuery('查 budget 表'),
+  ['budget', '查', '表']);
+
+check('mixed: latin term outweighs incidental bigram matches [Z3]',
+  core.searchVault('AFO的负责人是谁？', NOTES)[0].path,
+  'projects/afo.md');
+
+check('mixed: latin term in a zh question still matches, ranked first',
   core.searchVault('AFO的负责人是谁？', NOTES).map(r => r.path),
-  ['projects/afo.md']);
+  ['projects/afo.md', 'zh/预算.md']); // zh note now also matches via 负责 bigram (Z3) — AFO note must stay ranked first
 
 // ── applyCorrections (ASR correction dictionary) ───────────────────────────
 const DICT = [

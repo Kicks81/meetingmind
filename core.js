@@ -48,27 +48,48 @@
   // ── Obsidian vault keyword search (Q&A RAG) ─────────────────────────────
   const STOPWORDS = new Set(['the','a','an','is','are','was','were','be','been','to','of','in','on','for','and','or','with','that','this','it','what','who','when','where','why','how','do','does','did','can','could','will','would','should','i','you','we','they','he','she']);
 
-  // KNOWN BUG (backlog Z3): tokenizer only keeps [a-z0-9'], so CJK query
-  // terms are dropped entirely and Chinese questions match no notes.
-  function tokenizeQuery(query) {
+  // CJK has no spaces to split on, so Chinese query terms are matched as
+  // character bigrams (the typical zh word length). Bigrams containing
+  // high-frequency function characters (的/是/谁...) are dropped — they'd
+  // match almost any note. Latin terms score double: a whole matched word
+  // (e.g. "AFO") is far stronger evidence than one bigram.
+  const CJK_STOP_CHARS = new Set('的了是在和与及就都也很吗呢吧啊这那有个人我你他她它们');
+
+  function cjkBigrams(query) {
+    const terms = new Set();
+    for (const run of query.match(/[぀-ヿ㐀-䶿一-鿿豈-﫿]+/g) || []) {
+      if (run.length === 1) { terms.add(run); continue; }
+      for (let i = 0; i < run.length - 1; i++) terms.add(run.slice(i, i + 2));
+    }
+    return [...terms].filter(t => ![...t].some(c => CJK_STOP_CHARS.has(c)));
+  }
+
+  function latinTerms(query) {
     return [...new Set(query.toLowerCase().match(/[a-z0-9']+/g) || [])]
       .filter(t => t.length > 2 && !STOPWORDS.has(t));
+  }
+
+  function tokenizeQuery(query) {
+    return [...latinTerms(query), ...cjkBigrams(query)];
   }
 
   // notes: [{ path, content }] → top-N [{ path, excerpt }]
   function searchVault(query, notes, topN = 4) {
     if (!notes || !notes.length) return [];
-    const terms = tokenizeQuery(query);
-    if (!terms.length) return [];
+    const weighted = [
+      ...latinTerms(query).map(term => ({ term, weight: 2 })),
+      ...cjkBigrams(query).map(term => ({ term, weight: 1 })),
+    ];
+    if (!weighted.length) return [];
 
     const scored = notes.map(note => {
       const lower = note.content.toLowerCase();
       let score = 0;
       let firstMatchIdx = -1;
-      for (const term of terms) {
+      for (const { term, weight } of weighted) {
         const idx = lower.indexOf(term);
         if (idx === -1) continue;
-        score++; // one point per distinct matched term
+        score += weight;
         if (firstMatchIdx === -1 || idx < firstMatchIdx) firstMatchIdx = idx;
       }
       return { note, score, firstMatchIdx };

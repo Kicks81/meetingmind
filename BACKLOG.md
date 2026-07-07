@@ -5,9 +5,6 @@ The loop always takes the top unchecked item. Add new findings to the right tier
 never silently delete an item — strike it through with a reason.
 
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
-- [ ] **Z3. Vault RAG returns nothing for Chinese queries.** `match(/[a-z0-9']+/g)`
-  (meeting.html:598) drops all CJK characters. Tokenize CJK as bigrams (or per-char
-  substring match) alongside Latin words; keep STOPWORDS Latin-only.
 - [ ] **Z4. LLM prompts don't pin output language.** Summaries/answers/titles should
   respond in the meeting's dominant language (or mirror mixed zh-en). Add explicit
   instruction + detect dominant script of the batch.
@@ -41,6 +38,11 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **Z3. Chinese vault search.** Query tokenizer now emits CJK character bigrams
+  (function-char bigrams like 的/是/谁 filtered) alongside Latin words; Latin terms
+  score 2×. Chinese questions now retrieve zh vault notes; mixed queries rank the
+  exact Latin term first. All Z1/Z2/Z3 known-bug fixtures are now promoted — 0 remain.
+  (commit `Z3:`)
 - [x] **Z2.7. Correction dictionary for recurring mis-transcriptions.** Select wrong
   text in the transcript → ✏️ Fix → type the right term. Stored in localStorage,
   applied to all future ASR text (before summaries/Q&A/export see it), retro-applies
