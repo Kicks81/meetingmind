@@ -86,14 +86,22 @@ check('empty string counts as 0',
   core.countWords('   '),
   0);
 
-// Z2 — a whole Chinese sentence counts as 1 "word" (backlog Z2)
-expectFail('zh: 14-char sentence counts as ~7 words, not 1 [Z2]',
-  core.countWords('我们今天讨论一下项目预算的问题') >= 5,
-  true);
+// Z2 (fixed) — CJK characters count toward word totals
+check('zh: 15-char sentence counts as ~8 words, not 1 [Z2]',
+  core.countWords('我们今天讨论一下项目预算的问题'),
+  8);
 
-expectFail('mixed: zh chars contribute to the count [Z2]',
+check('mixed: zh chars and latin words both contribute [Z2]',
   core.countWords('我们讨论一下 the AFO budget 的问题') >= 6,
   true);
+
+check('zh: punctuation does not inflate the count [Z2]',
+  core.countWords('好的。！？'),
+  1);
+
+check('en: count unchanged by the CJK-aware rewrite [Z2]',
+  core.countWords('the quick brown fox jumps'),
+  5);
 
 // ── searchVault / tokenizeQuery ────────────────────────────────────────────
 const NOTES = [

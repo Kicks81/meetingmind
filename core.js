@@ -33,10 +33,16 @@
   }
 
   // ── Word counting (summary triggers, footer counter) ───────────────────
-  // KNOWN BUG (backlog Z2): whitespace splitting counts an entire Chinese
-  // utterance as one word, so word-threshold triggers never fire in zh.
+  // CJK text has no spaces, so whitespace splitting would count a whole
+  // Chinese utterance as one "word" and the word-threshold triggers would
+  // never fire in zh meetings. Count CJK characters individually (÷2 — a
+  // Chinese word averages ~2 chars) plus whitespace-delimited Latin words.
+  const CJK_CHARS = /[぀-ヿ㐀-䶿一-鿿豈-﫿]/g;
+
   function countWords(text) {
-    return text.trim().split(/\s+/).filter(Boolean).length;
+    const cjkChars = (text.match(CJK_CHARS) || []).length;
+    const latinWords = (text.replace(CJK_CHARS, ' ').match(/[\p{L}\p{N}']+/gu) || []).length;
+    return latinWords + Math.ceil(cjkChars / 2);
   }
 
   // ── Obsidian vault keyword search (Q&A RAG) ─────────────────────────────

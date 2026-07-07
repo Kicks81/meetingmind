@@ -5,11 +5,6 @@ The loop always takes the top unchecked item. Add new findings to the right tier
 never silently delete an item — strike it through with a reason.
 
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
-- [ ] **Z2. Word-count triggers never fire in Chinese.** All `split(/\s+/)` counts
-  (summary trigger at :1038/:1048, final-summary gate at :1089, word counter at :1020)
-  treat an entire Chinese utterance as 1 word → summaries effectively never trigger in
-  zh meetings. Use a CJK-aware count: CJK chars count individually (÷~2 to approximate
-  words) + whitespace tokens for Latin.
 - [ ] **Z3. Vault RAG returns nothing for Chinese queries.** `match(/[a-z0-9']+/g)`
   (meeting.html:598) drops all CJK characters. Tokenize CJK as bigrams (or per-char
   substring match) alongside Latin words; keep STOPWORDS Latin-only.
@@ -46,6 +41,10 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **Z2. CJK-aware word counting.** countWords now counts CJK chars ÷2 plus Latin
+  word tokens (punctuation excluded) — live-summary triggers now fire in zh meetings.
+  Also added DeepSeek V4 Flash/Pro (zh-native) to the model dropdown; "DSpark" is
+  DeepSeek's inference-speedup framework, not a selectable model. (commit `Z2:`)
 - [x] **Z1. Chinese question detection.** extractQuestions now matches `？` as well as
   `?`, treats `。！？` as sentence boundaries, and uses a lower min-length floor for
   CJK questions. Note: zh questions ending without `？` (吗/呢 forms that ASR
