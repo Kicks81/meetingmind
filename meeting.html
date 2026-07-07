@@ -116,7 +116,9 @@
 
   .main {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    /* Summary is the panel being read live during the meeting — give it
+       2/3 of the width; transcript and Q&A share the rest. */
+    grid-template-columns: 1fr 4fr 1fr;
     gap: 0;
     flex: 1;
     overflow: hidden;
@@ -387,7 +389,7 @@
       <span>&#128221;</span> Live Summary
       <span class="panel-badge" id="summaryCount">0</span>
     </div>
-    <div class="panel-body" id="summaryPanel">
+    <div class="panel-body" id="summaryPanel" data-autoscroll="always">
       <div class="empty-state">
         <div class="icon">&#128221;</div>
         Summary updates automatically as the meeting progresses.
@@ -404,7 +406,7 @@
       <input type="file" id="vaultFolderInput" webkitdirectory multiple style="display:none" onchange="loadVaultFiles(event)">
       <span class="panel-badge" id="qaCount">0</span>
     </div>
-    <div class="panel-body" id="qaPanel">
+    <div class="panel-body" id="qaPanel" data-autoscroll="always">
       <div class="empty-state">
         <div class="icon">&#128161;</div>
         Questions detected during the meeting will be answered here automatically.
@@ -1395,6 +1397,10 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   // every token fight each other and make manual scrolling feel broken.
   function scrollToBottomIfNearBottom(panel, threshold = 60) {
     if (!panel) return;
+    // Panels marked autoscroll=always (summary, Q&A) pin to the latest
+    // content unconditionally — they're glanced at during the meeting, so
+    // the newest update must always be visible.
+    if (panel.dataset.autoscroll === 'always') { panel.scrollTop = panel.scrollHeight; return; }
     const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
     if (distanceFromBottom <= threshold) panel.scrollTop = panel.scrollHeight;
   }
