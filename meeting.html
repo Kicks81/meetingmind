@@ -656,6 +656,10 @@
     if (summary) {
       meetingContext += '\n' + summary;
       textEl.innerHTML = formatSummaryHtml(summary);
+      // The final markdown render is taller than the streamed plain text
+      // (list markup, line spacing) — re-pin AFTER it, or the last bullets
+      // sit below the fold.
+      scrollToBottomIfNearBottom(panel);
     }
     clearProcessing();
   }
@@ -786,7 +790,10 @@
     answerEl.classList.remove('loading');
     answerEl.textContent = '';
     const answer = await streamIntoElement(answerEl, messages);
-    if (answer) answerEl.innerHTML = formatSummaryHtml(answer);
+    if (answer) {
+      answerEl.innerHTML = formatSummaryHtml(answer);
+      scrollToBottomIfNearBottom(panel); // re-pin after the taller final render
+    }
   }
 
   // ── System audio device selection (avoids the getDisplayMedia picker) ───
