@@ -23,8 +23,8 @@ never silently delete an item — strike it through with a reason.
   Granola's core value and is currently missing entirely.
 - [ ] **G2. User notes pane.** Let the user jot rough notes during the meeting; merge
   them with the transcript in the final synthesis (Granola's signature interaction).
-- [ ] **G3. Meeting templates.** Selectable note templates (1:1, standup, client call,
-  interview) that shape the final synthesis.
+- [ ] **G3b. Templates should also shape the final synthesis** once G1 exists (the
+  live-summary template part shipped as U5).
 - [ ] **G4. Speaker attribution.** Investigate BytePlus utterance speaker fields /
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
 
@@ -35,6 +35,11 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **U5. Manual Q&A + Granola-style summary templates.** Ask-the-AI input at the
+  bottom of the Q&A panel (Enter to send; uses meeting context + vault RAG, same
+  pipeline as auto-detected questions). Summary template selector in the Live
+  Summary header (general / 1:1 / standup / client / interview / brainstorm /
+  training) shapes the rolling-summary prompt; choice persists. (commit `U5:`)
 - [x] **U3. Oversized exports no longer silently download.** An export bigger than
   one obsidian:// URI now bisects into multiple URI-sized appends (600ms apart, same
   note) instead of falling back to a .md download that nobody notices. Export state

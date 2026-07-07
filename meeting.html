@@ -389,6 +389,15 @@
   <div class="panel">
     <div class="panel-header">
       <span>&#128221;</span> Live Summary
+      <select class="model-select" id="summaryTemplate" style="font-size:11px;" title="Summary template — shapes what the rolling summary pays attention to">
+        <option value="general">General meeting</option>
+        <option value="oneOnOne">1:1 / Check-in</option>
+        <option value="standup">Standup / Status</option>
+        <option value="client">Client call</option>
+        <option value="interview">Interview</option>
+        <option value="brainstorm">Brainstorm</option>
+        <option value="training">Training / Webinar</option>
+      </select>
       <span class="panel-badge" id="summaryCount">0</span>
     </div>
     <div class="panel-body" id="summaryPanel" data-autoscroll="always">
@@ -411,8 +420,11 @@
     <div class="panel-body" id="qaPanel" data-autoscroll="always">
       <div class="empty-state">
         <div class="icon">&#128161;</div>
-        Questions detected during the meeting will be answered here automatically.
+        Questions detected during the meeting will be answered here automatically — or ask your own below.
       </div>
+    </div>
+    <div style="padding:8px 10px;border-top:1px solid #30363d;flex-shrink:0;">
+      <input class="api-input" style="width:100%;" id="manualQuestion" placeholder="Ask the AI anything (uses meeting context + vault) — press Enter" onkeydown="if(event.key==='Enter'&&this.value.trim()){answerQuestion(this.value.trim());this.value='';}">
     </div>
   </div>
 </div>
@@ -595,6 +607,18 @@
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────
+  // Granola-style templates: each shapes what the rolling summary listens
+  // for. The base format rules (short bullets, **highlights**) stay fixed.
+  const SUMMARY_TEMPLATES = {
+    general:    'Focus on key points, decisions made, and action items (with owners when mentioned).',
+    oneOnOne:   'This is a 1:1 / check-in. Focus on feedback given and received, personal or career development points, concerns raised, and commitments either person made.',
+    standup:    'This is a standup / status meeting. Focus per person on: progress since last update, blockers, and what happens next. Flag anything overdue or at risk.',
+    client:     'This is a client call. Focus on client requests and pain points, commitments we made, scope or pricing discussion, risks, and agreed next steps with dates.',
+    interview:  'This is an interview. Focus on the candidate\'s answers: strengths, concerns or red flags, notable experience and claims to verify, and follow-up questions worth asking.',
+    brainstorm: 'This is a brainstorm. Capture every distinct idea raised (even briefly mentioned), pros/cons discussed, and which ideas got traction vs were parked.',
+    training:   'This is a training / webinar. Focus on the concepts taught, concrete how-to steps, examples given, and any resources, tools, or references mentioned.',
+  };
+
   async function generateSummary(newText) {
     const panel = document.getElementById('summaryPanel');
 
@@ -616,7 +640,9 @@
     const messages = [
       {
         role: 'system',
-        content: 'You are a concise meeting assistant. Given new meeting speech, summarise the key points just discussed as short bullet points. Use short, simple, plain language — no jargon, no long sentences. Each bullet is one line starting with "- ". Wrap genuinely key or repeated words/terms in **double asterisks** so they can be highlighted — only the important ones, not every line. ' + MeetingCore.languageInstruction(newText)
+        content: 'You are a concise meeting assistant. Given new meeting speech, summarise what was just discussed as short bullet points. Use short, simple, plain language — no jargon, no long sentences. Each bullet is one line starting with "- ". Wrap genuinely key or repeated words/terms in **double asterisks** so they can be highlighted — only the important ones, not every line. '
+          + (SUMMARY_TEMPLATES[document.getElementById('summaryTemplate').value] || SUMMARY_TEMPLATES.general) + ' '
+          + MeetingCore.languageInstruction(newText)
       },
       {
         role: 'user',
@@ -1425,7 +1451,8 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     obsidianVault: 'meetingmind_obsidian_vault',
     obsidianFolder: 'meetingmind_obsidian_folder',
     systemAudioDevice: 'meetingmind_system_audio_device',
-    hotwords: 'meetingmind_hotwords'
+    hotwords: 'meetingmind_hotwords',
+    summaryTemplate: 'meetingmind_summary_template'
   };
 
   async function restorePersistedFields() {
