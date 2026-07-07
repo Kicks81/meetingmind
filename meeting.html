@@ -1,0 +1,1378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MeetingMind</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f1117;
+    color: #e1e4e8;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    flex-shrink: 0;
+  }
+
+  .logo {
+    font-size: 18px;
+    font-weight: 700;
+    color: #58a6ff;
+    letter-spacing: -0.5px;
+  }
+
+  .header-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .api-input {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #e1e4e8;
+    padding: 6px 12px;
+    font-size: 13px;
+    width: 260px;
+  }
+
+  .api-input:focus { outline: none; border-color: #58a6ff; }
+
+  .model-select {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #e1e4e8;
+    padding: 6px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .model-select:focus { outline: none; border-color: #58a6ff; }
+
+  btn, .btn {
+    padding: 7px 16px;
+    border-radius: 6px;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .btn-start {
+    background: #238636;
+    color: #fff;
+  }
+
+  .btn-start:hover { background: #2ea043; }
+  .btn-start.recording { background: #da3633; }
+  .btn-start.recording:hover { background: #f85149; }
+
+  .btn-clear {
+    background: #21262d;
+    color: #8b949e;
+    border: 1px solid #30363d;
+  }
+
+  .btn-clear:hover { color: #e1e4e8; background: #30363d; }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #30363d;
+    display: inline-block;
+    margin-right: 6px;
+    transition: background 0.3s;
+  }
+
+  .status-dot.active {
+    background: #3fb950;
+    box-shadow: 0 0 6px #3fb950;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #30363d;
+    overflow: hidden;
+  }
+
+  .panel:last-child { border-right: none; }
+
+  .panel-header {
+    padding: 12px 16px;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #8b949e;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .panel-badge {
+    background: #21262d;
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 11px;
+    color: #58a6ff;
+    margin-left: auto;
+  }
+
+  .panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .panel-body::-webkit-scrollbar { width: 4px; }
+  .panel-body::-webkit-scrollbar-track { background: transparent; }
+  .panel-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+
+  /* Transcription */
+  .transcript-segment {
+    padding: 10px 12px;
+    background: #161b22;
+    border-radius: 8px;
+    border-left: 3px solid #30363d;
+    font-size: 14px;
+    line-height: 1.6;
+    animation: fadeIn 0.3s ease;
+    flex-shrink: 0;
+  }
+
+  .transcript-segment.interim {
+    border-left-color: #58a6ff;
+    opacity: 0.7;
+    font-style: italic;
+  }
+
+  .transcript-segment.final {
+    border-left-color: #3fb950;
+  }
+
+  .transcript-time {
+    font-size: 11px;
+    color: #6e7681;
+    margin-bottom: 4px;
+  }
+
+  /* Summary */
+  .summary-block {
+    padding: 12px 14px;
+    background: #161b22;
+    border-radius: 8px;
+    border-left: 3px solid #d29922;
+    font-size: 14px;
+    line-height: 1.7;
+    animation: fadeIn 0.4s ease;
+    flex-shrink: 0;
+  }
+
+  .summary-block .summary-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #d29922;
+    margin-bottom: 6px;
+  }
+
+  .summary-text ul, .qa-answer ul { margin: 0; padding-left: 18px; }
+  .summary-text li, .qa-answer li { margin-bottom: 5px; }
+  .summary-text p, .qa-answer p { margin: 0 0 6px 0; }
+  .summary-text mark, .qa-answer mark {
+    background: rgba(210, 153, 34, 0.22);
+    color: #e3b341;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+
+  /* Q&A */
+  .qa-card {
+    background: #161b22;
+    border-radius: 8px;
+    overflow: hidden;
+    animation: fadeIn 0.4s ease;
+    border: 1px solid #30363d;
+    flex-shrink: 0; /* panel-body is a flex column — without this, cards get compressed to fit instead of the panel scrolling */
+  }
+
+  .qa-question {
+    padding: 10px 14px;
+    background: #1f2937;
+    font-size: 13px;
+    font-weight: 600;
+    color: #f0883e;
+    border-left: 3px solid #f0883e;
+  }
+
+  .qa-question::before { content: "Q: "; }
+
+  .qa-answer {
+    padding: 10px 14px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #c9d1d9;
+    border-left: 3px solid #58a6ff;
+  }
+
+  .qa-answer.loading {
+    color: #6e7681;
+    font-style: italic;
+  }
+
+  .qa-answer.loading::after {
+    content: "";
+    display: inline-block;
+    width: 12px;
+    animation: dots 1.2s infinite;
+  }
+
+  @keyframes dots {
+    0% { content: ""; }
+    33% { content: "."; }
+    66% { content: ".."; }
+    100% { content: "..."; }
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .empty-state {
+    color: #6e7681;
+    font-size: 13px;
+    text-align: center;
+    padding: 40px 20px;
+    line-height: 1.6;
+  }
+
+  .empty-state .icon { font-size: 32px; margin-bottom: 10px; }
+
+  footer {
+    padding: 8px 24px;
+    background: #161b22;
+    border-top: 1px solid #30363d;
+    font-size: 12px;
+    color: #6e7681;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+
+  .processing-indicator {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #58a6ff;
+  }
+
+  .processing-indicator.visible { display: flex; }
+
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid #30363d;
+    border-top-color: #58a6ff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">&#9679; MeetingMind</div>
+  <div class="header-controls">
+    <span id="statusDot" class="status-dot"></span>
+    <span id="statusText" style="font-size:13px;color:#8b949e;">Ready</span>
+    <select class="model-select" id="modelSelect">
+      <option value="openai/gpt-4o-mini">GPT-4o Mini (fast)</option>
+      <option value="openai/gpt-4o">GPT-4o</option>
+      <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5</option>
+      <option value="anthropic/claude-sonnet-5">Claude Sonnet 5</option>
+      <option value="google/gemini-flash-1.5">Gemini Flash 1.5</option>
+      <option value="meta-llama/llama-3.1-8b-instruct">Llama 3.1 8B</option>
+      <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
+    </select>
+    <input class="api-input" type="password" id="apiKey" placeholder="OpenRouter API key (sk-or-...)" autocomplete="off">
+    <input class="api-input" style="width:180px;" type="password" id="bytePlusKey" placeholder="BytePlus API key (ASR)" autocomplete="off">
+    <input class="api-input" style="width:150px;" type="text" id="relayUrl" placeholder="ws://localhost:8765" value="ws://localhost:8765">
+    <input class="api-input" style="width:130px;" type="text" id="obsidianVault" placeholder="Obsidian vault name">
+    <input class="api-input" style="width:120px;" type="text" id="obsidianFolder" placeholder="Notes folder" value="Incorp Transformation Project/Meeting Notes">
+    <input class="api-input" style="width:200px;" type="text" id="hotwords" placeholder="Hotwords: Swetha, Kai, AFO, ..." title="Comma-separated names/jargon to help the ASR recognise them correctly">
+    <button class="btn btn-start" id="recordBtn" onclick="toggleRecording()">Start Meeting</button>
+    <button class="btn btn-clear" onclick="addToObsidian()">Add to Obsidian</button>
+    <button class="btn btn-clear" onclick="saveConfig()" title="Save keys/settings to a file on disk">Save Config</button>
+    <button class="btn btn-clear" onclick="document.getElementById('configFileInput').click()" title="Load keys/settings from a saved file">Load Config</button>
+    <input type="file" id="configFileInput" accept="application/json" style="display:none" onchange="loadConfig(event)">
+    <button class="btn btn-clear" onclick="clearAll()">Clear</button>
+  </div>
+</header>
+
+<div class="main">
+  <!-- Transcription Panel -->
+  <div class="panel">
+    <div class="panel-header">
+      <span>&#127908;</span> Live Transcription
+      <select class="model-select" id="systemAudioDevice" style="font-size:11px;max-width:150px;">
+        <option value="none">System audio: share picker</option>
+      </select>
+      <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="refreshAudioDevices()">&#128257;</button>
+      <span class="panel-badge" id="segCount">0</span>
+    </div>
+    <div class="panel-body" id="transcriptPanel">
+      <div class="empty-state">
+        <div class="icon">&#127908;</div>
+        Enter your OpenRouter and BytePlus API keys, start the relay (<code>node relay.js</code>), then click <strong>Start Meeting</strong> to begin live transcription.
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary Panel -->
+  <div class="panel">
+    <div class="panel-header">
+      <span>&#128221;</span> Live Summary
+      <span class="panel-badge" id="summaryCount">0</span>
+    </div>
+    <div class="panel-body" id="summaryPanel">
+      <div class="empty-state">
+        <div class="icon">&#128221;</div>
+        Summary updates automatically as the meeting progresses.
+      </div>
+    </div>
+  </div>
+
+  <!-- Q&A Panel -->
+  <div class="panel">
+    <div class="panel-header">
+      <span>&#128161;</span> Questions & Answers
+      <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="document.getElementById('vaultFolderInput').click()">Load Vault</button>
+      <span id="vaultStatus" style="font-size:11px;color:#6e7681;"></span>
+      <input type="file" id="vaultFolderInput" webkitdirectory multiple style="display:none" onchange="loadVaultFiles(event)">
+      <span class="panel-badge" id="qaCount">0</span>
+    </div>
+    <div class="panel-body" id="qaPanel">
+      <div class="empty-state">
+        <div class="icon">&#128161;</div>
+        Questions detected during the meeting will be answered here automatically.
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span id="wordCount">0 words transcribed</span>
+  <div class="processing-indicator" id="processingIndicator">
+    <div class="spinner"></div>
+    <span id="processingText">Processing...</span>
+  </div>
+  <span style="margin-left:auto;">MeetingMind &mdash; Powered by OpenRouter</span>
+</footer>
+
+<script>
+  // ── State ────────────────────────────────────────────────────────────────
+  let isRecording = false;
+  let finalTranscript = '';
+  let pendingText = '';           // accumulated text not yet summarised
+  let segmentCount = 0;
+  let summaryCount = 0;
+  let qaCount = 0;
+  let totalWords = 0;
+  let summaryTimer = null;
+  let seenQuestions = new Set();
+  let meetingContext = '';        // rolling plain-text of full meeting so far
+
+  const SUMMARY_WORD_THRESHOLD = 80;  // trigger summary every ~80 new words
+  const QUESTION_PATTERN = /[^.!?]*\?/g;
+
+  // ── Obsidian vault index (in-memory, keyword search) ─────────────────────
+  let vaultNotes = []; // { path, content }
+
+  // ── ASR (BytePlus streaming) state ──────────────────────────────────────
+  let asrSocket = null;
+  let audioCtx = null;
+  let mediaStream = null;
+  let systemStream = null;
+  let sourceNode = null;
+  let systemSourceNode = null;
+  let processorNode = null;
+  let muteNode = null;
+  let finalizedUtteranceCount = 0;
+  let interimEl = null;
+
+  const ASR_MODE = 'bigmodel_async';
+  const ASR_RESOURCE_ID = 'volc.seedasr.sauc.duration';
+  const MSG_FULL_CLIENT_REQUEST = 0b0001;
+  const MSG_AUDIO_ONLY_REQUEST = 0b0010;
+  const MSG_FULL_SERVER_RESPONSE = 0b1001;
+  const MSG_ERROR_RESPONSE = 0b1111;
+  const SER_NONE = 0b0000, SER_JSON = 0b0001;
+  const COMP_NONE = 0b0000, COMP_GZIP = 0b0001;
+
+  // ── OpenRouter call ──────────────────────────────────────────────────────
+  async function callOpenRouter(messages, signal) {
+    const key = document.getElementById('apiKey').value.trim();
+    const model = document.getElementById('modelSelect').value;
+    if (!key) return null;
+
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://meetingmind.local',
+        'X-Title': 'MeetingMind'
+      },
+      body: JSON.stringify({ model, messages, max_tokens: 512, stream: true }),
+      signal
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('OpenRouter error:', err);
+      return null;
+    }
+    return res;
+  }
+
+  // Stream response into an element
+  async function streamIntoElement(el, messages) {
+    const res = await callOpenRouter(messages);
+    if (!res) { el.textContent = '(API error — check your key)'; return; }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    el.textContent = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value);
+      for (const line of chunk.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') break;
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta?.content || '';
+          text += delta;
+          el.textContent = text;
+          scrollToBottomIfNearBottom(el.closest('.panel-body'));
+        } catch {}
+      }
+    }
+    return text;
+  }
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  async function generateSummary(newText) {
+    const panel = document.getElementById('summaryPanel');
+
+    // Remove empty state
+    panel.querySelector('.empty-state')?.remove();
+
+    summaryCount++;
+    document.getElementById('summaryCount').textContent = summaryCount;
+
+    const block = document.createElement('div');
+    block.className = 'summary-block';
+    block.innerHTML = `<div class="summary-label">Update ${summaryCount} &mdash; ${timestamp()}</div><div class="summary-text"></div>`;
+    panel.appendChild(block);
+    scrollToBottomIfNearBottom(panel);
+
+    const textEl = block.querySelector('.summary-text');
+    setProcessing('Summarising...');
+
+    const messages = [
+      {
+        role: 'system',
+        content: 'You are a concise meeting assistant. Given new meeting speech, summarise the key points just discussed as short bullet points. Use short, simple, plain language — no jargon, no long sentences. Each bullet is one line starting with "- ". Wrap genuinely key or repeated words/terms in **double asterisks** so they can be highlighted — only the important ones, not every line.'
+      },
+      {
+        role: 'user',
+        content: meetingContext
+          ? `Previous meeting context:\n${meetingContext}\n\nNew speech:\n${newText}\n\nSummarise the new speech in context.`
+          : `Meeting speech:\n${newText}\n\nSummarise the key points.`
+      }
+    ];
+
+    const summary = await streamIntoElement(textEl, messages);
+    if (summary) {
+      meetingContext += '\n' + summary;
+      textEl.innerHTML = formatSummaryHtml(summary);
+    }
+    clearProcessing();
+  }
+
+  // Renders the model's "- bullet" / "**highlight**" markdown into safe HTML —
+  // applied once streaming finishes rather than per-chunk, so an in-progress
+  // "**" mid-stream never renders as a broken tag.
+  function formatSummaryHtml(text) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    let html = '';
+    let inList = false;
+    for (const line of lines) {
+      const isBullet = /^[-*•]\s+/.test(line);
+      const raw = line.replace(/^[-*•]\s+/, '');
+      const content = escapeHtml(raw).replace(/\*\*(.+?)\*\*/g, '<mark>$1</mark>');
+      if (isBullet) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += `<li>${content}</li>`;
+      } else {
+        if (inList) { html += '</ul>'; inList = false; }
+        html += `<p>${content}</p>`;
+      }
+    }
+    if (inList) html += '</ul>';
+    return html;
+  }
+
+  // ── Obsidian vault loading & keyword search ──────────────────────────────
+  function loadVaultFiles(event) {
+    const files = [...event.target.files].filter(f => f.name.toLowerCase().endsWith('.md'));
+    document.getElementById('vaultStatus').textContent = `Loading ${files.length} notes...`;
+
+    Promise.all(files.map(file => new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ path: file.webkitRelativePath, content: reader.result.slice(0, 20000) });
+      reader.onerror = () => resolve(null);
+      reader.readAsText(file);
+    }))).then(results => {
+      vaultNotes = results.filter(Boolean);
+      document.getElementById('vaultStatus').textContent = `Vault: ${vaultNotes.length} notes indexed`;
+    });
+  }
+
+  const STOPWORDS = new Set(['the','a','an','is','are','was','were','be','been','to','of','in','on','for','and','or','with','that','this','it','what','who','when','where','why','how','do','does','did','can','could','will','would','should','i','you','we','they','he','she']);
+
+  function searchVault(query, topN = 4) {
+    if (!vaultNotes.length) return [];
+    const terms = [...new Set(query.toLowerCase().match(/[a-z0-9']+/g) || [])].filter(t => t.length > 2 && !STOPWORDS.has(t));
+    if (!terms.length) return [];
+
+    const scored = vaultNotes.map(note => {
+      const lower = note.content.toLowerCase();
+      let score = 0;
+      let firstMatchIdx = -1;
+      for (const term of terms) {
+        const idx = lower.indexOf(term);
+        if (idx === -1) continue;
+        score++; // one point per distinct matched term
+        if (firstMatchIdx === -1 || idx < firstMatchIdx) firstMatchIdx = idx;
+      }
+      return { note, score, firstMatchIdx };
+    }).filter(s => s.score > 0);
+
+    scored.sort((a, b) => b.score - a.score);
+
+    return scored.slice(0, topN).map(({ note, firstMatchIdx }) => {
+      const start = Math.max(0, firstMatchIdx - 200);
+      const excerpt = note.content.slice(start, start + 1000);
+      return { path: note.path, excerpt };
+    });
+  }
+
+  // ── Question Detection & Answering ───────────────────────────────────────
+  async function detectAndAnswerQuestions(text) {
+    const matches = text.match(QUESTION_PATTERN) || [];
+    for (const q of matches) {
+      const clean = q.trim();
+      if (clean.length < 10) continue;
+
+      // Dedupe by normalised form
+      const key = clean.toLowerCase().replace(/\s+/g, ' ');
+      if (seenQuestions.has(key)) continue;
+      seenQuestions.add(key);
+
+      if (await needsKnowledgeAnswer(clean)) {
+        answerQuestion(clean);
+      }
+    }
+  }
+
+  // A regex can catch "ends with ?" but can't tell a real knowledge question
+  // ("who owns the AFO integration?") from casual filler ("can you repeat
+  // that?", "shall we reconvene?"). Ask the model with a cheap one-word
+  // classification instead of guessing via heuristics.
+  async function needsKnowledgeAnswer(question) {
+    if (!document.getElementById('apiKey').value.trim()) return true; // no key yet — fail open, matches prior behaviour
+
+    const messages = [
+      {
+        role: 'system',
+        content: 'Classify a question asked during a meeting. Reply with exactly one word.\nYES: the question needs a real factual/knowledge-based answer (asks for information, an explanation, a fact, or a decision).\nNO: it is casual conversational filler, small talk, meeting logistics/scheduling, or a meta remark (e.g. "can you repeat that", "can you see my screen", "shall we reconvene", "do you want to change the meeting to 4pm").\nReply with only YES or NO, nothing else.'
+      },
+      { role: 'user', content: question }
+    ];
+
+    const scratch = document.createElement('div');
+    try {
+      const verdict = await streamIntoElement(scratch, messages);
+      return verdict?.trim().toUpperCase().startsWith('YES');
+    } catch {
+      return true; // fail open on error rather than silently dropping a real question
+    }
+  }
+
+  async function answerQuestion(question) {
+    const panel = document.getElementById('qaPanel');
+    panel.querySelector('.empty-state')?.remove();
+
+    qaCount++;
+    document.getElementById('qaCount').textContent = qaCount;
+
+    const card = document.createElement('div');
+    card.className = 'qa-card';
+    card.innerHTML = `
+      <div class="qa-question">${escapeHtml(question)}</div>
+      <div class="qa-answer loading">Thinking</div>`;
+    panel.appendChild(card);
+    scrollToBottomIfNearBottom(panel);
+
+    const answerEl = card.querySelector('.qa-answer');
+
+    const vaultMatches = searchVault(question);
+    const vaultContext = vaultMatches.length
+      ? `Relevant notes from your Obsidian vault:\n${vaultMatches.map(m => `### ${m.path}\n${m.excerpt}`).join('\n\n')}\n\n`
+      : '';
+
+    const messages = [
+      {
+        role: 'system',
+        content: 'You are a knowledgeable meeting assistant. A question was just asked during a meeting. Answer as 1-3 short bullet points using short, simple, plain language — no jargon, no long sentences. Each bullet starts with "- ". Wrap genuinely key terms in **double asterisks** to highlight them — only the important ones. Use the live meeting context and any relevant vault notes below — prefer the vault notes for factual or historical details they cover.'
+      },
+      {
+        role: 'user',
+        content: `${meetingContext ? `Meeting context so far:\n${meetingContext}\n\n` : ''}${vaultContext}Question asked: ${question}`
+      }
+    ];
+
+    answerEl.classList.remove('loading');
+    answerEl.textContent = '';
+    const answer = await streamIntoElement(answerEl, messages);
+    if (answer) answerEl.innerHTML = formatSummaryHtml(answer);
+  }
+
+  // ── System audio device selection (avoids the getDisplayMedia picker) ───
+  // Populating human-readable device labels requires mic permission to
+  // already have been granted at least once — otherwise Chrome returns
+  // generic blank labels for privacy. Click the refresh button again after
+  // your first "Start Meeting" if labels look empty.
+  async function refreshAudioDevices() {
+    const select = document.getElementById('systemAudioDevice');
+    const previousValue = select.value;
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(d => d.kind === 'audioinput');
+
+      select.innerHTML = '<option value="none">System audio: share picker</option>';
+      inputs.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${i + 1}`;
+        select.appendChild(opt);
+      });
+
+      if ([...select.options].some(o => o.value === previousValue)) select.value = previousValue;
+    } catch (err) {
+      console.warn('Could not list audio devices:', err.message);
+    }
+  }
+
+  async function captureSystemAudioViaSharePicker() {
+    try {
+      // displaySurface:'monitor' + systemAudio:'include' are hints Chrome
+      // uses to default the picker to the "Entire Screen" tab with audio
+      // pre-checked — the user still has to click a thumbnail + Share (that
+      // step can't be skipped), but this removes the "switch tabs" step.
+      const s = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: 'monitor' },
+        audio: true,
+        systemAudio: 'include'
+      });
+      s.getVideoTracks().forEach(t => t.stop());
+      if (!s.getAudioTracks().length) {
+        console.warn('Screen/tab share did not include audio — re-share with "Share audio" checked to fix this.');
+      }
+      return s;
+    } catch (err) {
+      console.warn('System audio capture skipped (cancelled or unsupported):', err.message);
+      return null;
+    }
+  }
+
+  // ── Speech Recognition (BytePlus ASR-Streaming via local relay) ─────────
+  async function gzip(bytes) {
+    const cs = new CompressionStream('gzip');
+    const writer = cs.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  }
+
+  async function gunzip(bytes) {
+    const ds = new DecompressionStream('gzip');
+    const writer = ds.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+  }
+
+  function buildFrame(messageType, flags, serialization, compression, payload) {
+    const out = new Uint8Array(8 + payload.length);
+    out[0] = (0x1 << 4) | 0x1;                       // version 1, header size 1 (4 bytes)
+    out[1] = (messageType << 4) | flags;
+    out[2] = (serialization << 4) | compression;
+    out[3] = 0x00;                                   // reserved
+    new DataView(out.buffer).setUint32(4, payload.length, false);
+    out.set(payload, 8);
+    return out;
+  }
+
+  async function sendFullClientRequest() {
+    const request = {
+      model_name: 'bigmodel',
+      enable_itn: true,
+      enable_punc: true,
+      enable_ddc: true,
+      show_utterances: true,
+      enable_nonstream: true,
+      result_type: 'full',
+      end_window_size: 800
+    };
+
+    // Hotwords bias BytePlus's recognizer toward specific names/jargon it'd
+    // otherwise mis-hear (e.g. "Swetha" -> "Chata Chataly") — this is BytePlus's
+    // documented vocabulary-hint mechanism, not real acoustic model retraining.
+    const hotwordsRaw = document.getElementById('hotwords').value.trim();
+    if (hotwordsRaw) {
+      const words = hotwordsRaw.split(',').map(w => w.trim()).filter(Boolean).map(word => ({ word }));
+      if (words.length) {
+        request.corpus = { context: JSON.stringify({ hotwords: words }) };
+      }
+    }
+
+    const config = {
+      user: { uid: 'meetingmind' },
+      audio: { format: 'pcm', codec: 'raw', rate: 16000, bits: 16, channel: 1 },
+      request
+    };
+    const payload = await gzip(new TextEncoder().encode(JSON.stringify(config)));
+    asrSocket.send(buildFrame(MSG_FULL_CLIENT_REQUEST, 0b0000, SER_JSON, COMP_GZIP, payload));
+  }
+
+  async function sendAudioChunk(pcm16Bytes, isLast) {
+    const payload = await gzip(pcm16Bytes);
+    asrSocket.send(buildFrame(MSG_AUDIO_ONLY_REQUEST, isLast ? 0b0010 : 0b0000, SER_NONE, COMP_GZIP, payload));
+  }
+
+  function floatTo16BitPCM(float32Array) {
+    const out = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return new Uint8Array(out.buffer);
+  }
+
+  async function handleAsrFrame(buf) {
+    const view = new DataView(buf);
+    const headerBytes = (view.getUint8(0) & 0x0f) * 4;
+    const messageType = view.getUint8(1) >> 4;
+    const serialization = view.getUint8(2) >> 4;
+    const compression = view.getUint8(2) & 0x0f;
+    let offset = headerBytes;
+
+    if (messageType === MSG_ERROR_RESPONSE) {
+      const errorCode = view.getUint32(offset, false); offset += 4;
+      const msgSize = view.getUint32(offset, false); offset += 4;
+      const msg = new TextDecoder().decode(new Uint8Array(buf, offset, msgSize));
+      console.error('ASR error', errorCode, msg);
+      return;
+    }
+
+    if (messageType !== MSG_FULL_SERVER_RESPONSE) return;
+
+    const flags = view.getUint8(1) & 0x0f;
+    if (flags & 0b0001) offset += 4; // sequence field present only when this bit is set
+    const payloadSize = view.getUint32(offset, false); offset += 4;
+    let payload = new Uint8Array(buf, offset, payloadSize);
+    if (compression === COMP_GZIP) payload = await gunzip(payload);
+    if (serialization !== SER_JSON) return;
+
+    const rawText = new TextDecoder().decode(payload);
+    const json = JSON.parse(rawText);
+    processAsrResult(json);
+  }
+
+  function processAsrResult(json) {
+    // Response shape is { audio_info, result: { text, utterances, ... } } — no payload_msg wrapper.
+    const utterances = json.result?.utterances;
+    if (!utterances || !utterances.length) return;
+
+    // Pull the interim element out of the flow before inserting any new
+    // final segments, so it never ends up stuck above them — it always gets
+    // re-appended last, below.
+    if (interimEl) { interimEl.remove(); interimEl = null; }
+
+    for (let i = finalizedUtteranceCount; i < utterances.length; i++) {
+      const u = utterances[i];
+      if (!u.definite) break;
+      // Some utterance entries (e.g. pure-silence segments) can come back
+      // with no text at all — skip those rather than crashing on .trim(),
+      // but still advance past them so we don't reprocess forever.
+      if (typeof u.text === 'string' && u.text.trim()) {
+        addFinalSegment(u.text);
+        pendingText += ' ' + u.text;
+        finalTranscript += ' ' + u.text;
+        checkSummaryTrigger();
+        detectAndAnswerQuestions(u.text);
+        checkObsidianAutoSplit();
+      }
+      finalizedUtteranceCount = i + 1;
+    }
+
+    const last = utterances[utterances.length - 1];
+    if (last && !last.definite && typeof last.text === 'string') {
+      interimEl = createTranscriptSegment('', true);
+      interimEl.querySelector('.seg-text').textContent = last.text;
+      // Re-scroll after the (possibly multi-line) text is filled in — the
+      // scroll inside createTranscriptSegment happened while it was still
+      // empty, so it doesn't account for the height the real text adds.
+      const panel = document.getElementById('transcriptPanel');
+      panel.scrollTop = panel.scrollHeight;
+    }
+  }
+
+  async function startRecognition() {
+    const apiKey = document.getElementById('bytePlusKey').value.trim();
+    const relayUrl = document.getElementById('relayUrl').value.trim() || 'ws://localhost:8765';
+    if (!apiKey) { alert('Please enter your BytePlus API key.'); throw new Error('missing BytePlus key'); }
+
+    finalizedUtteranceCount = 0;
+    interimEl = null;
+
+    // Set up ALL audio capture BEFORE connecting to BytePlus. The share
+    // picker (for system audio) waits on the user, which can easily take
+    // longer than BytePlus's 8-second "waiting for first packet" timeout —
+    // so the session must not exist yet while we're waiting on that click.
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // Mic alone only hears you — for online calls (Teams/Zoom), the other
+    // participants' voices come through system/speaker output. If a virtual
+    // audio device (e.g. VB-Cable) is configured, capture it as a second
+    // *microphone* input — that permission is remembered permanently by
+    // Chrome, unlike getDisplayMedia's picker, which prompts every time.
+    const systemDeviceId = document.getElementById('systemAudioDevice').value;
+    if (systemDeviceId && systemDeviceId !== 'none') {
+      try {
+        systemStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: systemDeviceId } } });
+      } catch (err) {
+        console.warn('Could not open the configured system-audio device, falling back to the share picker:', err.message);
+        systemStream = await captureSystemAudioViaSharePicker();
+      }
+    } else {
+      systemStream = await captureSystemAudioViaSharePicker();
+    }
+
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+    sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+    processorNode = audioCtx.createScriptProcessor(2048, 1, 1);
+    muteNode = audioCtx.createGain();
+    muteNode.gain.value = 0;
+
+    sourceNode.connect(processorNode);
+
+    if (systemStream && systemStream.getAudioTracks().length) {
+      systemSourceNode = audioCtx.createMediaStreamSource(systemStream);
+      systemSourceNode.connect(processorNode); // Web Audio sums multiple inputs into the same node automatically
+
+      // TEMPORARY DIAGNOSTIC — logs the actual captured system-audio peak
+      // level once a second so we can tell whether Windows is silently
+      // delivering empty samples (e.g. a Bluetooth loopback limitation)
+      // versus a problem elsewhere in the pipeline. Safe: this is a passive
+      // tap, it doesn't alter what gets sent to BytePlus.
+      const diagAnalyser = audioCtx.createAnalyser();
+      systemSourceNode.connect(diagAnalyser);
+      const diagBuf = new Float32Array(diagAnalyser.fftSize);
+      let diagTicksLeft = 30; // ~30s of ticks; runs on a fixed count, not the isRecording flag (which isn't set true until after this function returns)
+      const logSystemAudioLevel = () => {
+        if (diagTicksLeft-- <= 0) return;
+        diagAnalyser.getFloatTimeDomainData(diagBuf);
+        let peak = 0;
+        for (const s of diagBuf) peak = Math.max(peak, Math.abs(s));
+        console.log('[system audio level]', peak.toFixed(4), peak > 0.001 ? '(has signal)' : '(silent)');
+        setTimeout(logSystemAudioLevel, 1000);
+      };
+      logSystemAudioLevel();
+    }
+
+    processorNode.connect(muteNode);
+    muteNode.connect(audioCtx.destination);
+
+    // The audio graph is now fully built and already producing samples —
+    // gate actual sending on this flag rather than on `isRecording` (which
+    // the caller only sets true after this whole function resolves) so we
+    // start streaming the instant BytePlus's session is ready, not later.
+    let audioReadyToSend = false;
+    processorNode.onaudioprocess = (e) => {
+      if (!audioReadyToSend) return;
+      sendAudioChunk(floatTo16BitPCM(e.inputBuffer.getChannelData(0)), false);
+    };
+
+    asrSocket = new WebSocket(relayUrl);
+    asrSocket.binaryType = 'arraybuffer';
+
+    await new Promise((resolve, reject) => {
+      asrSocket.onerror = () => reject(new Error(`Could not reach the ASR relay at ${relayUrl}. Start it with "node relay.js" first.`));
+      asrSocket.onclose = () => reject(new Error('ASR relay connection closed before it was ready.'));
+      asrSocket.onopen = () => {
+        asrSocket.send(JSON.stringify({ apiKey, mode: ASR_MODE, resourceId: ASR_RESOURCE_ID }));
+      };
+      asrSocket.onmessage = async (e) => {
+        if (typeof e.data !== 'string') return; // binary frames only arrive after 'ready'
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'ready') {
+          asrSocket.onmessage = (ev) => handleAsrFrame(ev.data);
+          asrSocket.onclose = () => { if (isRecording) console.warn('ASR relay connection closed unexpectedly'); };
+          await sendFullClientRequest();
+          audioReadyToSend = true;
+          resolve();
+        } else if (msg.type === 'error') {
+          reject(new Error('BytePlus ASR error: ' + msg.message));
+        }
+      };
+    });
+  }
+
+  async function stopRecognition() {
+    if (processorNode) { processorNode.onaudioprocess = null; processorNode.disconnect(); processorNode = null; }
+    if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+    if (systemSourceNode) { systemSourceNode.disconnect(); systemSourceNode = null; }
+    if (muteNode) { muteNode.disconnect(); muteNode = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (systemStream) { systemStream.getTracks().forEach(t => t.stop()); systemStream = null; }
+    if (audioCtx) { await audioCtx.close(); audioCtx = null; }
+    if (asrSocket && asrSocket.readyState === WebSocket.OPEN) {
+      await sendAudioChunk(new Uint8Array(0), true);
+      setTimeout(() => asrSocket && asrSocket.close(), 1500);
+    }
+    asrSocket = null;
+    if (interimEl) { interimEl.remove(); interimEl = null; }
+  }
+
+  function addFinalSegment(text) {
+    const panel = document.getElementById('transcriptPanel');
+    panel.querySelector('.empty-state')?.remove();
+
+    segmentCount++;
+    document.getElementById('segCount').textContent = segmentCount;
+
+    const words = text.trim().split(/\s+/).length;
+    totalWords += words;
+    document.getElementById('wordCount').textContent = `${totalWords} words transcribed`;
+
+    createTranscriptSegment(text, false);
+  }
+
+  function createTranscriptSegment(text, isInterim) {
+    const panel = document.getElementById('transcriptPanel');
+    const el = document.createElement('div');
+    el.className = `transcript-segment ${isInterim ? 'interim' : 'final'}`;
+    el.innerHTML = `<div class="transcript-time">${timestamp()}</div><div class="seg-text">${escapeHtml(text)}</div>`;
+    panel.appendChild(el);
+    panel.scrollTop = panel.scrollHeight;
+    return el;
+  }
+
+  function checkSummaryTrigger() {
+    const words = pendingText.trim().split(/\s+/).filter(Boolean).length;
+    if (words >= SUMMARY_WORD_THRESHOLD) {
+      const batch = pendingText;
+      pendingText = '';
+      clearTimeout(summaryTimer);
+      generateSummary(batch);
+    } else {
+      // Also trigger after 30s of silence
+      clearTimeout(summaryTimer);
+      summaryTimer = setTimeout(() => {
+        if (pendingText.trim().split(/\s+/).length >= 10) {
+          const batch = pendingText;
+          pendingText = '';
+          generateSummary(batch);
+        }
+      }, 30000);
+    }
+  }
+
+  // ── Controls ─────────────────────────────────────────────────────────────
+  async function toggleRecording() {
+    if (!isRecording) {
+      const key = document.getElementById('apiKey').value.trim();
+      if (!key) { alert('Please enter your OpenRouter API key first.'); return; }
+
+      document.getElementById('statusText').textContent = 'Connecting...';
+      try {
+        await startRecognition();
+      } catch (err) {
+        console.error(err);
+        alert(err.message);
+        document.getElementById('statusText').textContent = 'Ready';
+        await stopRecognition();
+        return;
+      }
+
+      isRecording = true;
+      document.getElementById('recordBtn').textContent = 'Stop Meeting';
+      document.getElementById('recordBtn').classList.add('recording');
+      document.getElementById('statusDot').classList.add('active');
+      document.getElementById('statusText').textContent = 'Recording';
+    } else {
+      isRecording = false;
+      await stopRecognition();
+      clearTimeout(summaryTimer);
+      document.getElementById('recordBtn').textContent = 'Start Meeting';
+      document.getElementById('recordBtn').classList.remove('recording');
+      document.getElementById('statusDot').classList.remove('active');
+      document.getElementById('statusText').textContent = 'Stopped';
+
+      // Final summary of remaining text
+      if (pendingText.trim().split(/\s+/).length >= 5) {
+        await generateSummary(pendingText);
+        pendingText = '';
+      }
+
+      // Ship whatever's left to Obsidian automatically — no manual click
+      // needed; this is a silent no-op if no vault name is configured.
+      await sendObsidianChunk();
+    }
+  }
+
+  function clearAll() {
+    if (isRecording) toggleRecording();
+    document.getElementById('transcriptPanel').innerHTML = '<div class="empty-state"><div class="icon">&#127908;</div>Enter your OpenRouter and BytePlus API keys, start the relay (<code>node relay.js</code>), then click <strong>Start Meeting</strong> to begin live transcription.</div>';
+    document.getElementById('summaryPanel').innerHTML = '<div class="empty-state"><div class="icon">&#128221;</div>Summary updates automatically as the meeting progresses.</div>';
+    document.getElementById('qaPanel').innerHTML = '<div class="empty-state"><div class="icon">&#128161;</div>Questions detected during the meeting will be answered here automatically.</div>';
+    finalTranscript = '';
+    pendingText = '';
+    meetingContext = '';
+    segmentCount = 0; summaryCount = 0; qaCount = 0; totalWords = 0;
+    seenQuestions.clear();
+    obsidianNotePath = null;
+    obsidianMeetingTitle = null;
+    obsidianChunkNumber = 1;
+    document.getElementById('segCount').textContent = '0';
+    document.getElementById('summaryCount').textContent = '0';
+    document.getElementById('qaCount').textContent = '0';
+    document.getElementById('wordCount').textContent = '0 words transcribed';
+    document.getElementById('statusText').textContent = 'Ready';
+  }
+
+  // ── Export to Obsidian ───────────────────────────────────────────────────
+  function sanitizeFilename(name) {
+    return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 80);
+  }
+
+  async function suggestMeetingTitle() {
+    const content = (meetingContext || finalTranscript).trim();
+    if (!document.getElementById('apiKey').value.trim() || !content) return null;
+
+    const messages = [
+      {
+        role: 'system',
+        content: 'You generate short filenames for meeting notes. Reply with ONLY a concise 3-7 word title — no punctuation, no quotes, no file extension, no explanation.'
+      },
+      { role: 'user', content: `Meeting content:\n${content.slice(0, 3000)}\n\nGenerate a short title for this meeting.` }
+    ];
+
+    const scratch = document.createElement('div');
+    try {
+      const title = await streamIntoElement(scratch, messages);
+      return title?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Incremental Obsidian export — ONE note per meeting, grown via repeated
+  // small appends, rather than fragmenting into separate "Part N" files.
+  // Obsidian's obsidian://new action documents an "append" flag ("include
+  // this parameter to append to an existing file if one exists" —
+  // https://obsidian.md/help/uri) that's mutually exclusive with
+  // "overwrite". The 30k-character ceiling below is a limit of the URI
+  // hand-off mechanism itself, not of Obsidian or markdown files — Obsidian
+  // is fine with arbitrarily long notes; we just can't hand it all the text
+  // through a URL in one shot.
+  let obsidianNotePath = null;     // fixed for the whole meeting once the first chunk is sent
+  let obsidianMeetingTitle = null; // generated once, reused for the note title/filename
+  let obsidianChunkNumber = 1;     // chronological chunk label *within* the single note
+
+  function unexportedObsidianElements() {
+    const transcriptEls = [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')].filter(el => !el.dataset.obsidianExported);
+    const summaryEls = [...document.querySelectorAll('#summaryPanel .summary-block')].filter(el => !el.dataset.obsidianExported);
+    const qaEls = [...document.querySelectorAll('#qaPanel .qa-card')].filter(el => !el.dataset.obsidianExported);
+    return { transcriptEls, summaryEls, qaEls };
+  }
+
+  async function buildObsidianChunkMarkdown() {
+    const { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
+    if (!transcriptEls.length && !summaryEls.length && !qaEls.length) return null;
+
+    const isFirstChunk = !obsidianNotePath;
+
+    if (!obsidianMeetingTitle) {
+      setProcessing('Naming meeting...');
+      const suggestedTitle = await suggestMeetingTitle();
+      clearProcessing();
+      obsidianMeetingTitle = suggestedTitle ? sanitizeFilename(suggestedTitle) : 'Meeting Notes';
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const timeStr = timestamp();
+
+    if (isFirstChunk) {
+      const yearMonth = dateStr.slice(0, 7);
+      const baseFolder = document.getElementById('obsidianFolder').value.trim() || 'Meeting Notes';
+      obsidianNotePath = `${baseFolder}/${yearMonth}/${dateStr} - ${obsidianMeetingTitle}`;
+    }
+
+    const transcriptLines = transcriptEls.map(el => `**${el.querySelector('.transcript-time').textContent}** — ${el.querySelector('.seg-text').textContent}`);
+    const summaryBlocks = summaryEls.map(el => `${el.querySelector('.summary-label').textContent}:\n${el.querySelector('.summary-text').textContent}`);
+    const qaBlocks = qaEls.map(el => `**Q:** ${el.querySelector('.qa-question').textContent}\n**A:** ${el.querySelector('.qa-answer').textContent}`);
+
+    const chunkBody = `## Segment ${obsidianChunkNumber} — ${timeStr}
+${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}${transcriptLines.length ? `\n**Transcript**\n${transcriptLines.join('\n\n')}\n` : ''}${qaBlocks.length ? `\n**Q&A**\n${qaBlocks.join('\n\n')}\n` : ''}`;
+
+    const md = isFirstChunk
+      ? `---\ntitle: ${obsidianMeetingTitle}\ndate: ${dateStr}\ntags: [meeting, meetingmind]\n---\n\n# ${obsidianMeetingTitle}\n${dateStr} ${timeStr}\n\n${chunkBody}`
+      : `\n\n${chunkBody}`; // appended chunks skip frontmatter/title — those only belong at the top of the file
+
+    obsidianChunkNumber++;
+    return { notePath: obsidianNotePath, md, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls] };
+  }
+
+  function downloadMarkdownFile(notePath, md) {
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${notePath}.md`; // Chrome preserves "/" as subfolders under the downloads dir
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  const OBSIDIAN_URI_LENGTH_LIMIT = 30000;
+  const OBSIDIAN_AUTO_SPLIT_THRESHOLD = OBSIDIAN_URI_LENGTH_LIMIT * 0.75; // leave headroom before hitting the hard limit
+
+  async function sendObsidianChunk() {
+    const vault = document.getElementById('obsidianVault').value.trim();
+    if (!vault) return false;
+
+    const chunk = await buildObsidianChunkMarkdown();
+    if (!chunk) return false; // nothing new since the last chunk
+
+    // Build the query string manually with encodeURIComponent (-> %20 for
+    // spaces) rather than URLSearchParams (-> "+" for spaces, the HTML-form
+    // convention) — Obsidian's URI parser doesn't necessarily decode "+"
+    // back to a space, which silently corrupted names like "Chee Kuang x
+    // incorp" into "Chee+Kuang+x+incorp" and broke vault matching.
+    const parts = [
+      `vault=${encodeURIComponent(vault)}`,
+      `file=${encodeURIComponent(chunk.notePath)}`,
+      `content=${encodeURIComponent(chunk.md)}`
+    ];
+    if (chunk.append) parts.push('append=true');
+    const uri = `obsidian://new?${parts.join('&')}`;
+
+    if (uri.length > OBSIDIAN_URI_LENGTH_LIMIT) {
+      // Even this one chunk is too big by itself — fall back to a download
+      // for just this chunk rather than blocking the whole export. This
+      // breaks the "one note" goal for this specific chunk only.
+      downloadMarkdownFile(`${chunk.notePath} (chunk ${obsidianChunkNumber - 1})`, chunk.md);
+      console.warn('This chunk was too long for the direct Obsidian handoff — downloaded instead:', chunk.notePath);
+    } else {
+      window.location.href = uri;
+    }
+
+    chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; });
+    return true;
+  }
+
+  // Called after every new final transcript segment — cheaply estimates the
+  // unsent content's size (×3 as a buffer for how much CJK text expands
+  // under encodeURIComponent) and, once it's approaching the URI limit,
+  // automatically appends that chunk into the meeting's single note.
+  async function checkObsidianAutoSplit() {
+    if (!document.getElementById('obsidianVault').value.trim()) return;
+    const { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
+    const roughLength = [...transcriptEls, ...summaryEls, ...qaEls].reduce((sum, el) => sum + el.textContent.length, 0);
+    if (roughLength * 3 < OBSIDIAN_AUTO_SPLIT_THRESHOLD) return;
+    await sendObsidianChunk();
+  }
+
+  // Manual button — sends whatever hasn't been exported yet as the next
+  // (or first) chunk appended into the meeting's note.
+  async function addToObsidian() {
+    const vault = document.getElementById('obsidianVault').value.trim();
+    if (!vault) { alert('Please enter your Obsidian vault name first.'); return; }
+    const sent = await sendObsidianChunk();
+    if (!sent) alert('Nothing new to send — everything so far has already been exported to Obsidian.');
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function timestamp() {
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Only snap to bottom if the user was already near it — otherwise, several
+  // concurrent streaming answers/summaries each forcing scrollTop=bottom on
+  // every token fight each other and make manual scrolling feel broken.
+  function scrollToBottomIfNearBottom(panel, threshold = 60) {
+    if (!panel) return;
+    const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
+    if (distanceFromBottom <= threshold) panel.scrollTop = panel.scrollHeight;
+  }
+
+  function setProcessing(msg) {
+    const el = document.getElementById('processingIndicator');
+    el.classList.add('visible');
+    document.getElementById('processingText').textContent = msg;
+  }
+
+  function clearProcessing() {
+    document.getElementById('processingIndicator').classList.remove('visible');
+  }
+
+  // ── Persist API keys / relay URL locally (this browser only) ────────────
+  const PERSISTED_FIELDS = {
+    apiKey: 'meetingmind_openrouter_key',
+    bytePlusKey: 'meetingmind_byteplus_key',
+    relayUrl: 'meetingmind_relay_url',
+    obsidianVault: 'meetingmind_obsidian_vault',
+    obsidianFolder: 'meetingmind_obsidian_folder',
+    systemAudioDevice: 'meetingmind_system_audio_device',
+    hotwords: 'meetingmind_hotwords'
+  };
+
+  async function restorePersistedFields() {
+    for (const [fieldId, storageKey] of Object.entries(PERSISTED_FIELDS)) {
+      const el = document.getElementById(fieldId);
+      const saved = localStorage.getItem(storageKey);
+      // systemAudioDevice's real options aren't populated yet at this point
+      // (they come from enumerateDevices below) — restore its value after.
+      if (saved && fieldId !== 'systemAudioDevice') el.value = saved;
+      el.addEventListener('input', () => localStorage.setItem(storageKey, el.value));
+      el.addEventListener('change', () => localStorage.setItem(storageKey, el.value));
+    }
+
+    await refreshAudioDevices();
+    const savedDevice = localStorage.getItem(PERSISTED_FIELDS.systemAudioDevice);
+    const select = document.getElementById('systemAudioDevice');
+    if (savedDevice && [...select.options].some(o => o.value === savedDevice)) {
+      select.value = savedDevice;
+    }
+  }
+
+  // Chrome's built-in password manager can reset type="password" fields
+  // shortly after they're set inline during page parsing — restoring after
+  // 'load' (once autofill has already had its say) avoids that race.
+  if (document.readyState === 'complete') {
+    restorePersistedFields();
+  } else {
+    window.addEventListener('load', restorePersistedFields);
+  }
+
+  // ── Save/Load config as a file (survives browser-policy data clearing) ──
+  function saveConfig() {
+    const config = {};
+    for (const fieldId of Object.keys(PERSISTED_FIELDS)) {
+      config[fieldId] = document.getElementById(fieldId).value;
+    }
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'meetingmind-config.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function loadConfig(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const config = JSON.parse(reader.result);
+        for (const [fieldId, storageKey] of Object.entries(PERSISTED_FIELDS)) {
+          if (config[fieldId] === undefined) continue;
+          document.getElementById(fieldId).value = config[fieldId];
+          localStorage.setItem(storageKey, config[fieldId]);
+        }
+      } catch {
+        alert('That file was not a valid MeetingMind config JSON.');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = ''; // allow reselecting the same file later
+  }
+</script>
+</body>
+</html>
