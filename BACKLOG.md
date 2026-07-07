@@ -35,6 +35,11 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **U6. Small-talk removal.** Hover any transcript segment → ✕ deletes it.
+  🧹 button in the transcript header batch-classifies un-exported segments via the
+  LLM (conservative: only pure greetings/filler/goodbyes), previews what it found,
+  and deletes on confirm. Deleted segments are excluded from Obsidian export;
+  already-exported segments are never touched. (commit `U6:`)
 - [x] **U5. Manual Q&A + Granola-style summary templates.** Ask-the-AI input at the
   bottom of the Q&A panel (Enter to send; uses meeting context + vault RAG, same
   pipeline as auto-detected questions). Summary template selector in the Live

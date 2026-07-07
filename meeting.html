@@ -182,7 +182,25 @@
     line-height: 1.6;
     animation: fadeIn 0.3s ease;
     flex-shrink: 0;
+    position: relative;
   }
+
+  .seg-delete {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    background: none;
+    border: none;
+    color: #6e7681;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: none;
+  }
+
+  .transcript-segment:hover .seg-delete { display: block; }
+  .seg-delete:hover { color: #f85149; background: #21262d; }
 
   .transcript-segment.interim {
     border-left-color: #58a6ff;
@@ -375,6 +393,7 @@
       </select>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="refreshAudioDevices()">&#128257;</button>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="manageDictionary()" title="Correction dictionary — select mis-heard text in the transcript and click ✏️ Fix to teach it the right term">&#128214; <span id="dictCount">0</span></button>
+      <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="cleanSmallTalk()" title="AI-remove small talk (greetings, chit-chat, filler) from the transcript — only segments not yet exported to Obsidian">&#129529;</button>
       <span class="panel-badge" id="segCount">0</span>
     </div>
     <div class="panel-body" id="transcriptPanel">
@@ -1129,9 +1148,60 @@
     const el = document.createElement('div');
     el.className = `transcript-segment ${isInterim ? 'interim' : 'final'}`;
     el.innerHTML = `<div class="transcript-time">${timestamp()}</div><div class="seg-text">${escapeHtml(text)}</div>`;
+    if (!isInterim) {
+      const del = document.createElement('button');
+      del.className = 'seg-delete';
+      del.textContent = '✕';
+      del.title = 'Delete this segment (it will be excluded from Obsidian export)';
+      del.onclick = () => deleteSegment(el);
+      el.appendChild(del);
+    }
     panel.appendChild(el);
     panel.scrollTop = panel.scrollHeight;
     return el;
+  }
+
+  function deleteSegment(el) {
+    el.remove();
+    segmentCount = document.querySelectorAll('#transcriptPanel .transcript-segment.final').length;
+    document.getElementById('segCount').textContent = segmentCount;
+  }
+
+  // ── Small-talk cleanup ────────────────────────────────────────────────────
+  // Batch-classifies the not-yet-exported transcript segments and deletes
+  // the pure small talk (greetings, chit-chat, filler). Already-exported
+  // segments are left alone — they're in Obsidian; deleting them here would
+  // only make the on-screen record disagree with the note.
+  async function cleanSmallTalk() {
+    if (!document.getElementById('apiKey').value.trim()) { alert('Enter your OpenRouter API key first.'); return; }
+    const segments = [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')]
+      .filter(el => !el.dataset.obsidianExported);
+    if (!segments.length) { alert('No un-exported segments to clean.'); return; }
+
+    setProcessing('Finding small talk...');
+    const listing = segments.map((el, i) => `${i + 1}. ${el.querySelector('.seg-text').textContent}`).join('\n');
+    const messages = [
+      {
+        role: 'system',
+        content: 'You are given numbered meeting-transcript utterances (may be Chinese, English, or mixed). Identify which are PURE small talk with no meeting value: greetings, weather chat, "can you hear me" checks, filler, or goodbyes. Be conservative — if an utterance contains ANY substantive content, do not flag it. Reply with ONLY the numbers to remove, comma-separated (e.g. 1,4,7), or NONE.'
+      },
+      { role: 'user', content: listing }
+    ];
+
+    const scratch = document.createElement('div');
+    let verdict = '';
+    try { verdict = (await streamIntoElement(scratch, messages)) || ''; } catch {}
+    clearProcessing();
+
+    const nums = [...new Set((verdict.match(/\d+/g) || []).map(Number))].filter(n => n >= 1 && n <= segments.length);
+    if (!nums.length) { alert('No small talk found.'); return; }
+
+    const preview = nums.slice(0, 8).map(n => `• ${segments[n - 1].querySelector('.seg-text').textContent.slice(0, 60)}`).join('\n');
+    if (!confirm(`Delete ${nums.length} small-talk segment(s)?\n\n${preview}${nums.length > 8 ? '\n…' : ''}`)) return;
+
+    nums.forEach(n => segments[n - 1].remove());
+    segmentCount = document.querySelectorAll('#transcriptPanel .transcript-segment.final').length;
+    document.getElementById('segCount').textContent = segmentCount;
   }
 
   function checkSummaryTrigger() {
