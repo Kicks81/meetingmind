@@ -135,6 +135,31 @@ check('mixed: latin term in a zh question still matches',
   core.searchVault('AFO的负责人是谁？', NOTES).map(r => r.path),
   ['projects/afo.md']);
 
+// ── extractVaultFolders (Z2.5 folder picker) ───────────────────────────────
+check('folders: strips vault root, includes ancestors, sorts, dedupes',
+  core.extractVaultFolders([
+    'MyVault/Projects/Meeting Notes/2026-07/a.md',
+    'MyVault/Projects/Meeting Notes/2026-07/b.md',
+    'MyVault/Daily/2026-07-01.md',
+  ]),
+  ['Daily', 'Projects', 'Projects/Meeting Notes', 'Projects/Meeting Notes/2026-07']);
+
+check('folders: hidden folders (.obsidian, .trash) excluded',
+  core.extractVaultFolders(['V/.obsidian/app.json', 'V/.trash/old.md', 'V/Notes/x.md']),
+  ['Notes']);
+
+check('folders: root-level files produce no folder entries',
+  core.extractVaultFolders(['V/readme.md']),
+  []);
+
+check('zh: Chinese folder names preserved',
+  core.extractVaultFolders(['V/会议记录/2026-07/记录.md']),
+  ['会议记录', '会议记录/2026-07']);
+
+check('folders: empty input → empty list',
+  core.extractVaultFolders([]),
+  []);
+
 // ── formatSummaryHtml ──────────────────────────────────────────────────────
 check('bullets + highlights render as list with <mark>',
   core.formatSummaryHtml('- Budget approved for **Q3**\n- Kai owns follow-up'),

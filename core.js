@@ -83,6 +83,24 @@
     });
   }
 
+  // ── Vault folder listing (Obsidian export destination picker) ───────────
+  // Input: webkitRelativePath strings from a directory picker pointed at the
+  // vault root, e.g. "MyVault/Projects/Meeting Notes/2026-07/note.md".
+  // Output: unique folder paths relative to the vault root ("Projects",
+  // "Projects/Meeting Notes", ...), hidden folders (.obsidian, .trash)
+  // excluded, sorted. The first path segment (the picked root) is stripped.
+  function extractVaultFolders(relativePaths) {
+    const folders = new Set();
+    for (const p of relativePaths || []) {
+      const segments = p.split('/').slice(1, -1); // drop picked-root prefix + filename
+      if (segments.some(s => s.startsWith('.'))) continue;
+      for (let i = 1; i <= segments.length; i++) {
+        folders.add(segments.slice(0, i).join('/'));
+      }
+    }
+    return [...folders].filter(Boolean).sort();
+  }
+
   // ── Rendering helpers ────────────────────────────────────────────────────
   function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -114,6 +132,7 @@
   }
 
   return {
+    extractVaultFolders,
     extractQuestions,
     questionKey,
     countWords,

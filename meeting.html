@@ -347,7 +347,10 @@
     <input class="api-input" style="width:180px;" type="password" id="bytePlusKey" placeholder="BytePlus API key (ASR)" autocomplete="off">
     <input class="api-input" style="width:150px;" type="text" id="relayUrl" placeholder="ws://localhost:8765" value="ws://localhost:8765">
     <input class="api-input" style="width:130px;" type="text" id="obsidianVault" placeholder="Obsidian vault name">
-    <input class="api-input" style="width:120px;" type="text" id="obsidianFolder" placeholder="Notes folder" value="Incorp Transformation Project/Meeting Notes">
+    <input class="api-input" style="width:120px;" type="text" id="obsidianFolder" placeholder="Notes folder" value="Incorp Transformation Project/Meeting Notes" list="folderOptions" title="Where meeting notes are created inside the vault (a YYYY-MM subfolder is added automatically)">
+    <datalist id="folderOptions"></datalist>
+    <button class="btn btn-clear" style="padding:6px 8px;" title="Pick your vault folder once — the notes-folder box then autocompletes from your vault's real folders" onclick="document.getElementById('vaultDirInput').click()">&#128193;</button>
+    <input type="file" id="vaultDirInput" webkitdirectory multiple style="display:none" onchange="pickVaultFolders(event)">
     <input class="api-input" style="width:200px;" type="text" id="hotwords" placeholder="Hotwords: Swetha, Kai, AFO, ..." title="Comma-separated names/jargon to help the ASR recognise them correctly">
     <button class="btn btn-start" id="recordBtn" onclick="toggleRecording()">Start Meeting</button>
     <button class="btn btn-clear" onclick="addToObsidian()">Add to Obsidian</button>
@@ -558,8 +561,40 @@
     clearProcessing();
   }
 
+  // ── Obsidian folder picker (Z2.5) ────────────────────────────────────────
+  // Point the picker at the vault root once; every folder in the vault then
+  // shows up as an autocomplete option on the notes-folder input. Files are
+  // never read — only their relative paths are used.
+  function populateFolderOptions(relativePaths) {
+    const folders = MeetingCore.extractVaultFolders(relativePaths);
+    const datalist = document.getElementById('folderOptions');
+    datalist.innerHTML = '';
+    for (const f of folders) {
+      const opt = document.createElement('option');
+      opt.value = f;
+      datalist.appendChild(opt);
+    }
+    return folders.length;
+  }
+
+  function pickVaultFolders(event) {
+    const paths = [...event.target.files].map(f => f.webkitRelativePath);
+    const count = populateFolderOptions(paths);
+    if (count) {
+      const input = document.getElementById('obsidianFolder');
+      input.focus();
+      alert(`Found ${count} folders in the vault — the notes-folder box now autocompletes from them. Clear it and start typing to browse.`);
+    } else {
+      alert('No folders found — pick your Obsidian vault\'s top-level folder.');
+    }
+    event.target.value = '';
+  }
+
   // ── Obsidian vault loading & keyword search ──────────────────────────────
   function loadVaultFiles(event) {
+    // The RAG picker already sees the whole vault tree — reuse it to fill
+    // the export-folder autocomplete too (same data as the 📁 button).
+    populateFolderOptions([...event.target.files].map(f => f.webkitRelativePath));
     const files = [...event.target.files].filter(f => f.name.toLowerCase().endsWith('.md'));
     document.getElementById('vaultStatus').textContent = `Loading ${files.length} notes...`;
 

@@ -41,6 +41,11 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **Z2.5. Click-to-select Obsidian folder.** 📁 button (and the existing Load
+  Vault picker) fill a datalist so the notes-folder input autocompletes from the
+  vault's real folders; core.extractVaultFolders is eval-covered incl. zh names.
+  OS folder-pick dialog itself needs one manual click-through to fully confirm.
+  (commit `Z2.5:`)
 - [x] **Z2. CJK-aware word counting.** countWords now counts CJK chars ÷2 plus Latin
   word tokens (punctuation excluded) — live-summary triggers now fire in zh meetings.
   Also added DeepSeek V4 Flash/Pro (zh-native) to the model dropdown; "DSpark" is
