@@ -116,9 +116,10 @@
 
   .main {
     display: grid;
-    /* Summary is the panel being read live during the meeting — give it
-       2/3 of the width; transcript and Q&A share the rest. */
-    grid-template-columns: 1fr 4fr 1fr;
+    /* Summary is the panel being read live during the meeting — it gets
+       the lion's share, but the side panels keep a usable minimum width
+       so transcript text and Q&A cards don't become unreadable slivers. */
+    grid-template-columns: minmax(320px, 1.2fr) minmax(0, 3fr) minmax(320px, 1.2fr);
     gap: 0;
     flex: 1;
     overflow: hidden;
@@ -134,7 +135,8 @@
   .panel:last-child { border-right: none; }
 
   .panel-header {
-    padding: 12px 16px;
+    white-space: nowrap; /* keep titles like "Live Transcription" on one line */
+    padding: 12px 14px;
     background: #161b22;
     border-bottom: 1px solid #30363d;
     font-size: 12px;
