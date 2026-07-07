@@ -5,10 +5,6 @@ The loop always takes the top unchecked item. Add new findings to the right tier
 never silently delete an item — strike it through with a reason.
 
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
-- [ ] **Z1. Question detection misses Chinese questions.** `QUESTION_PATTERN = /[^.!?]*\?/g`
-  (meeting.html:433) only matches ASCII `?`. BytePlus punctuation emits full-width `？`
-  for Chinese. Also split sentences on `。！？` — and catch Chinese question forms that
-  end without `？` (吗/呢/多少/什么/怎么...) via the existing LLM classifier.
 - [ ] **Z2. Word-count triggers never fire in Chinese.** All `split(/\s+/)` counts
   (summary trigger at :1038/:1048, final-summary gate at :1089, word counter at :1020)
   treat an entire Chinese utterance as 1 word → summaries effectively never trigger in
@@ -50,6 +46,11 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **Z1. Chinese question detection.** extractQuestions now matches `？` as well as
+  `?`, treats `。！？` as sentence boundaries, and uses a lower min-length floor for
+  CJK questions. Note: zh questions ending without `？` (吗/呢 forms that ASR
+  punctuates with 。) still rely on ASR punctuation — if this proves lossy in real
+  meetings, add an LLM-side catch (new item, not blocking). (commit `Z1:`)
 - [x] **L0. Extract pure text logic + eval harness.** core.js (UMD, shared by
   meeting.html and Node) + evals/run.mjs: 22 passing checks, 6 known-bug fixtures
   documenting Z1/Z2/Z3 that flip to failures when the bug is fixed. (commit: see git log, `L0:`)

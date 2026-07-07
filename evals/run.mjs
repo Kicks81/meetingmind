@@ -47,14 +47,26 @@ check('en: no questions → empty',
   core.extractQuestions('Let us move on to the next agenda item.'),
   []);
 
-// Z1 — Chinese full-width ？ is not detected (backlog Z1)
-expectFail('zh: full-width ？ question detected [Z1]',
+// Z1 (fixed) — Chinese full-width ？ questions are detected
+check('zh: full-width ？ question detected [Z1]',
   core.extractQuestions('我们下一步怎么安排这个项目的预算？'),
   ['我们下一步怎么安排这个项目的预算？']);
 
-expectFail('mixed: zh question about an en term detected [Z1]',
+check('mixed: zh question about an en term detected [Z1]',
   core.extractQuestions('关于AFO integration，现在谁负责跟进？'),
   ['关于AFO integration，现在谁负责跟进？']);
+
+check('zh: preceding 。statement does not bleed into the question [Z1]',
+  core.extractQuestions('预算已经批了。下一步谁来跟进？'),
+  ['下一步谁来跟进？']);
+
+check('zh: short-but-real question passes the CJK length floor [Z1]',
+  core.extractQuestions('预算是多少？'),
+  ['预算是多少？']);
+
+check('zh: statements without ？ are not flagged [Z1]',
+  core.extractQuestions('我们今天讨论预算。大家都同意了！'),
+  []);
 
 check('mixed: ASCII ? after zh text still detected',
   core.extractQuestions('这个很重要 — who owns the AFO integration?'),

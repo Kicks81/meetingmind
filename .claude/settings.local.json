@@ -28,7 +28,8 @@
       "WebFetch(domain:obsidian.md)",
       "Bash(git add *)",
       "Bash(git commit -q -m 'Baseline: audit, backlog, and improvement-loop protocol *)",
-      "Bash(node evals/run.mjs)"
+      "Bash(node evals/run.mjs)",
+      "Bash(git commit -q -m 'Z1: CJK-aware question detection \\(full-width ？, 。！？ boundaries\\) *)"
     ]
   }
 }

@@ -10,15 +10,21 @@
   'use strict';
 
   // ── Question detection ──────────────────────────────────────────────────
-  // KNOWN BUG (backlog Z1): only matches ASCII "?", so Chinese questions
-  // ending in full-width "？" are never detected.
-  const QUESTION_PATTERN = /[^.!?]*\?/g;
+  // A question is any sentence ending in ASCII "?" or full-width "？"
+  // (BytePlus punctuation emits ？ for Chinese speech). Sentence boundaries
+  // include the CJK terminators 。！？ so a preceding Chinese statement
+  // doesn't bleed into the extracted question.
+  const QUESTION_PATTERN = /[^.!?。！？]*[?？]/g;
+  const HAS_CJK = /[぀-ヿ㐀-䶿一-鿿豈-﫿]/;
 
   // Returns candidate question strings found in a chunk of transcript text.
-  // Dedupe against previously-seen questions is the caller's job.
+  // Dedupe against previously-seen questions is the caller's job. The
+  // min-length filter drops conversational fragments ("Really?") — CJK text
+  // packs a whole question into few chars, so it gets a lower floor.
   function extractQuestions(text) {
-    const matches = text.match(QUESTION_PATTERN) || [];
-    return matches.map(q => q.trim()).filter(q => q.length >= 10);
+    return (text.match(QUESTION_PATTERN) || [])
+      .map(q => q.trim())
+      .filter(q => q.length >= (HAS_CJK.test(q) ? 5 : 10));
   }
 
   // Normalised form used to dedupe repeated questions.
