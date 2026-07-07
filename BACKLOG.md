@@ -41,6 +41,12 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **Z2.7. Correction dictionary for recurring mis-transcriptions.** Select wrong
+  text in the transcript → ✏️ Fix → type the right term. Stored in localStorage,
+  applied to all future ASR text (before summaries/Q&A/export see it), retro-applies
+  to on-screen segments, and correction targets are auto-fed to BytePlus as hotwords
+  so the ASR starts hearing them right. 📖 button manages/deletes entries.
+  CJK-aware (substring match for zh, word-boundary for Latin). (commit `Z2.7:`)
 - [x] **Z2.5. Click-to-select Obsidian folder.** 📁 button (and the existing Load
   Vault picker) fill a datalist so the notes-folder input autocompletes from the
   vault's real folders; core.extractVaultFolders is eval-covered incl. zh names.

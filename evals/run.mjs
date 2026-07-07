@@ -135,6 +135,42 @@ check('mixed: latin term in a zh question still matches',
   core.searchVault('AFO的负责人是谁？', NOTES).map(r => r.path),
   ['projects/afo.md']);
 
+// ── applyCorrections (ASR correction dictionary) ───────────────────────────
+const DICT = [
+  { wrong: 'chata chataly', right: 'Swetha' },
+  { wrong: 'chata', right: 'Swetha' },
+  { wrong: '澳福', right: 'AFO' },
+  { wrong: 'in corp', right: 'InCorp' },
+];
+
+check('en: case-insensitive whole-word correction',
+  core.applyCorrections('I spoke to Chata about the rollout.', DICT),
+  'I spoke to Swetha about the rollout.');
+
+check('en: longest wrong-term wins over its overlapping prefix',
+  core.applyCorrections('chata chataly will present next week', DICT),
+  'Swetha will present next week');
+
+check('en: word boundary protects substrings inside other words',
+  core.applyCorrections('the chatarooms are busy', DICT),
+  'the chatarooms are busy');
+
+check('zh: CJK term corrected as substring (no word boundaries)',
+  core.applyCorrections('我们明天和澳福团队开会。', DICT),
+  '我们明天和AFO团队开会。');
+
+check('mixed: multiple corrections in one utterance',
+  core.applyCorrections('chata说in corp的澳福项目下周启动', DICT),
+  'Swetha说InCorp的AFO项目下周启动');
+
+check('corrections: empty dictionary is a no-op',
+  core.applyCorrections('nothing changes here', []),
+  'nothing changes here');
+
+check('corrections: regex special chars in wrong term are literal',
+  core.applyCorrections('the a.f.o. team met', [{ wrong: 'a.f.o.', right: 'AFO' }]),
+  'the AFO team met');
+
 // ── normalizeVaultName ─────────────────────────────────────────────────────
 check('vault: plain name passes through',
   core.normalizeVaultName('Chee Kuang x incorp'),

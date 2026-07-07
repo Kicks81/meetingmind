@@ -83,6 +83,32 @@
     });
   }
 
+  // ── Correction dictionary (fix recurring ASR mis-transcriptions) ────────
+  // corrections: [{ wrong, right }]. Longest `wrong` wins first so an entry
+  // like "chata chataly" is fixed before a shorter overlapping "chata".
+  // Latin terms match case-insensitively on word boundaries; CJK terms match
+  // as plain substrings (CJK has no spaces, and \b doesn't work against it).
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function applyCorrections(text, corrections) {
+    if (!corrections || !corrections.length) return text;
+    const sorted = [...corrections].sort((a, b) => b.wrong.length - a.wrong.length);
+    let out = text;
+    for (const { wrong, right } of sorted) {
+      if (!wrong || typeof right !== 'string') continue;
+      const cjk = /[぀-ヿ㐀-䶿一-鿿豈-﫿]/.test(wrong);
+      // \b only exists next to a word char — apply it per edge, so terms
+      // ending in punctuation ("a.f.o.") still match.
+      const lead = !cjk && /^\w/.test(wrong) ? '\\b' : '';
+      const tail = !cjk && /\w$/.test(wrong) ? '\\b' : '';
+      const pattern = lead + escapeRegExp(wrong) + tail;
+      out = out.replace(new RegExp(pattern, cjk ? 'g' : 'gi'), right);
+    }
+    return out;
+  }
+
   // ── Vault name normalisation ─────────────────────────────────────────────
   // The obsidian:// URI wants the vault NAME, but users naturally paste the
   // vault's full filesystem path — which makes Obsidian error with "Vault
@@ -140,6 +166,7 @@
   }
 
   return {
+    applyCorrections,
     normalizeVaultName,
     extractVaultFolders,
     extractQuestions,

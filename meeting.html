@@ -370,6 +370,7 @@
         <option value="none">System audio: share picker</option>
       </select>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="refreshAudioDevices()">&#128257;</button>
+      <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="manageDictionary()" title="Correction dictionary — select mis-heard text in the transcript and click ✏️ Fix to teach it the right term">&#128214; <span id="dictCount">0</span></button>
       <span class="panel-badge" id="segCount">0</span>
     </div>
     <div class="panel-body" id="transcriptPanel">
@@ -443,6 +444,74 @@
 
   // ── Obsidian vault index (in-memory, keyword search) ─────────────────────
   let vaultNotes = []; // { path, content }
+
+  // ── Correction dictionary (persistent ASR fix-ups) ───────────────────────
+  const CORRECTIONS_KEY = 'meetingmind_corrections';
+  let corrections = [];
+  try { corrections = JSON.parse(localStorage.getItem(CORRECTIONS_KEY)) || []; } catch {}
+
+  function persistCorrections() {
+    localStorage.setItem(CORRECTIONS_KEY, JSON.stringify(corrections));
+    document.getElementById('dictCount').textContent = corrections.length;
+  }
+
+  function addCorrection(wrong, right) {
+    corrections = corrections.filter(c => c.wrong !== wrong); // newest wins
+    corrections.push({ wrong, right });
+    persistCorrections();
+    // Retro-fix everything already on screen so the meeting reads correctly.
+    for (const el of document.querySelectorAll('#transcriptPanel .seg-text')) {
+      el.textContent = MeetingCore.applyCorrections(el.textContent, corrections);
+    }
+  }
+
+  // Selecting mis-heard text in the transcript pops a small ✏️ affordance;
+  // clicking it asks for the correct term and saves it to the dictionary.
+  function setupCorrectionUI() {
+    const fixBtn = document.createElement('button');
+    fixBtn.textContent = '✏️ Fix';
+    fixBtn.className = 'btn btn-clear';
+    fixBtn.style.cssText = 'position:fixed;display:none;z-index:10;padding:3px 10px;font-size:12px;';
+    document.body.appendChild(fixBtn);
+    let selectedText = '';
+
+    document.getElementById('transcriptPanel').addEventListener('mouseup', () => {
+      const sel = window.getSelection();
+      const text = sel.toString().trim();
+      const inTranscript = sel.anchorNode && document.getElementById('transcriptPanel').contains(sel.anchorNode);
+      if (text && inTranscript && text.length <= 60) {
+        selectedText = text;
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        fixBtn.style.left = `${Math.min(rect.left, window.innerWidth - 90)}px`;
+        fixBtn.style.top = `${rect.bottom + 6}px`;
+        fixBtn.style.display = 'block';
+      } else {
+        fixBtn.style.display = 'none';
+      }
+    });
+
+    fixBtn.addEventListener('click', () => {
+      fixBtn.style.display = 'none';
+      const right = prompt(`Correct "${selectedText}" to:`);
+      if (right && right.trim() && right.trim() !== selectedText) {
+        addCorrection(selectedText, right.trim());
+      }
+    });
+  }
+  setupCorrectionUI();
+  document.getElementById('dictCount').textContent = corrections.length;
+
+  // Prompt-based dictionary manager: shows entries, a number deletes one.
+  function manageDictionary() {
+    if (!corrections.length) { alert('Dictionary is empty. Select mis-heard text in the transcript and click "✏️ Fix" to add corrections.'); return; }
+    const listing = corrections.map((c, i) => `${i + 1}. ${c.wrong} → ${c.right}`).join('\n');
+    const answer = prompt(`Correction dictionary (applied to all future transcription):\n${listing}\n\nType a number to DELETE that entry, or Cancel to close.`);
+    const idx = parseInt(answer, 10) - 1;
+    if (!isNaN(idx) && corrections[idx]) {
+      corrections.splice(idx, 1);
+      persistCorrections();
+    }
+  }
 
   // ── ASR (BytePlus streaming) state ──────────────────────────────────────
   let asrSocket = null;
@@ -783,11 +852,14 @@
     // otherwise mis-hear (e.g. "Swetha" -> "Chata Chataly") — this is BytePlus's
     // documented vocabulary-hint mechanism, not real acoustic model retraining.
     const hotwordsRaw = document.getElementById('hotwords').value.trim();
-    if (hotwordsRaw) {
-      const words = hotwordsRaw.split(',').map(w => w.trim()).filter(Boolean).map(word => ({ word }));
-      if (words.length) {
-        request.corpus = { context: JSON.stringify({ hotwords: words }) };
-      }
+    // Correction-dictionary "right" terms double as hotwords: once you've
+    // taught the app a name, the ASR itself gets biased toward hearing it.
+    const words = [...new Set([
+      ...hotwordsRaw.split(',').map(w => w.trim()).filter(Boolean),
+      ...corrections.map(c => c.right),
+    ])].map(word => ({ word }));
+    if (words.length) {
+      request.corpus = { context: JSON.stringify({ hotwords: words }) };
     }
 
     const config = {
@@ -860,11 +932,14 @@
       // with no text at all — skip those rather than crashing on .trim(),
       // but still advance past them so we don't reprocess forever.
       if (typeof u.text === 'string' && u.text.trim()) {
-        addFinalSegment(u.text);
-        pendingText += ' ' + u.text;
-        finalTranscript += ' ' + u.text;
+        // Dictionary fix-ups run before anything downstream sees the text,
+        // so summaries, Q&A, and exports all get the corrected terms.
+        const text = MeetingCore.applyCorrections(u.text, corrections);
+        addFinalSegment(text);
+        pendingText += ' ' + text;
+        finalTranscript += ' ' + text;
         checkSummaryTrigger();
-        detectAndAnswerQuestions(u.text);
+        detectAndAnswerQuestions(text);
         checkObsidianAutoSplit();
       }
       finalizedUtteranceCount = i + 1;
@@ -873,7 +948,7 @@
     const last = utterances[utterances.length - 1];
     if (last && !last.definite && typeof last.text === 'string') {
       interimEl = createTranscriptSegment('', true);
-      interimEl.querySelector('.seg-text').textContent = last.text;
+      interimEl.querySelector('.seg-text').textContent = MeetingCore.applyCorrections(last.text, corrections);
       // Re-scroll after the (possibly multi-line) text is filled in — the
       // scroll inside createTranscriptSegment happened while it was still
       // empty, so it doesn't account for the height the real text adds.
