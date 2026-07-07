@@ -27,7 +27,8 @@
       "Bash(/c/Windows/System32/cmd.exe //c test123.bat)",
       "WebFetch(domain:obsidian.md)",
       "Bash(git add *)",
-      "Bash(git commit -q -m 'Baseline: audit, backlog, and improvement-loop protocol *)"
+      "Bash(git commit -q -m 'Baseline: audit, backlog, and improvement-loop protocol *)",
+      "Bash(node evals/run.mjs)"
     ]
   }
 }

@@ -1,0 +1,160 @@
+// MeetingMind eval harness — regression checks for the pure logic in core.js.
+// Run: node evals/run.mjs   (exit code 0 = all pass)
+//
+// Fixtures accumulate: once added, never removed (IMPROVEMENT_LOOP.md).
+// Known bugs (backlog Z1–Z3) are asserted with expectFail — they document the
+// bug and will FLIP to a hard failure once fixed, forcing the fixture to be
+// promoted to a normal expectation in the same change.
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const core = require('../core.js');
+
+let passed = 0, failed = 0, knownBugs = 0;
+const failures = [];
+
+function check(name, actual, expected) {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  if (ok) { passed++; }
+  else { failed++; failures.push({ name, actual, expected }); }
+}
+
+// Documents a known bug: passes while the bug exists, fails loudly once the
+// behavior is fixed (so the fixture must then be promoted via `check`).
+function expectFail(name, actual, desiredOnceFixed) {
+  const fixedAlready = JSON.stringify(actual) === JSON.stringify(desiredOnceFixed);
+  if (fixedAlready) {
+    failed++;
+    failures.push({ name: `${name} — BUG APPEARS FIXED: promote this expectFail to check()`, actual, expected: desiredOnceFixed });
+  } else {
+    knownBugs++;
+  }
+}
+
+// ── extractQuestions ───────────────────────────────────────────────────────
+check('en: detects a question',
+  core.extractQuestions('We shipped the release. Who owns the AFO integration?'),
+  ['Who owns the AFO integration?']);
+
+check('en: short questions (<10 chars) are skipped',
+  core.extractQuestions('Really? I did not know that.'),
+  []);
+
+check('en: multiple questions in one utterance',
+  core.extractQuestions('What is the budget? And who approves it after review?'),
+  ['What is the budget?', 'And who approves it after review?']);
+
+check('en: no questions → empty',
+  core.extractQuestions('Let us move on to the next agenda item.'),
+  []);
+
+// Z1 — Chinese full-width ？ is not detected (backlog Z1)
+expectFail('zh: full-width ？ question detected [Z1]',
+  core.extractQuestions('我们下一步怎么安排这个项目的预算？'),
+  ['我们下一步怎么安排这个项目的预算？']);
+
+expectFail('mixed: zh question about an en term detected [Z1]',
+  core.extractQuestions('关于AFO integration，现在谁负责跟进？'),
+  ['关于AFO integration，现在谁负责跟进？']);
+
+check('mixed: ASCII ? after zh text still detected',
+  core.extractQuestions('这个很重要 — who owns the AFO integration?'),
+  ['这个很重要 — who owns the AFO integration?']);
+
+// ── questionKey ────────────────────────────────────────────────────────────
+check('dedupe key normalises case and whitespace',
+  core.questionKey('Who   OWNS the AFO  integration?'),
+  'who owns the afo integration?');
+
+// ── countWords ─────────────────────────────────────────────────────────────
+check('en: counts whitespace-separated words',
+  core.countWords('  the quick brown fox jumps  '),
+  5);
+
+check('empty string counts as 0',
+  core.countWords('   '),
+  0);
+
+// Z2 — a whole Chinese sentence counts as 1 "word" (backlog Z2)
+expectFail('zh: 14-char sentence counts as ~7 words, not 1 [Z2]',
+  core.countWords('我们今天讨论一下项目预算的问题') >= 5,
+  true);
+
+expectFail('mixed: zh chars contribute to the count [Z2]',
+  core.countWords('我们讨论一下 the AFO budget 的问题') >= 6,
+  true);
+
+// ── searchVault / tokenizeQuery ────────────────────────────────────────────
+const NOTES = [
+  { path: 'projects/afo.md', content: 'The AFO integration is owned by Swetha. Kickoff was in June.' },
+  { path: 'people/kai.md', content: 'Kai leads the transformation office and reports monthly.' },
+  { path: 'zh/预算.md', content: '项目预算由财务部审批，每季度更新一次。负责人是陈伟。' },
+];
+
+check('en: finds the right note',
+  core.searchVault('who owns the AFO integration?', NOTES).map(r => r.path),
+  ['projects/afo.md']);
+
+check('en: stopword-only query returns nothing',
+  core.searchVault('what is it for?', NOTES),
+  []);
+
+check('en: no match returns empty',
+  core.searchVault('quarterly kubernetes migration?', NOTES),
+  []);
+
+// Z3 — Chinese query terms are dropped by the tokenizer (backlog Z3)
+expectFail('zh: query matches the zh note [Z3]',
+  core.searchVault('项目预算谁负责审批？', NOTES).map(r => r.path),
+  ['zh/预算.md']);
+
+expectFail('zh: tokenizer keeps CJK terms [Z3]',
+  core.tokenizeQuery('项目预算谁负责？').length > 0,
+  true);
+
+check('mixed: latin term in a zh question still matches',
+  core.searchVault('AFO的负责人是谁？', NOTES).map(r => r.path),
+  ['projects/afo.md']);
+
+// ── formatSummaryHtml ──────────────────────────────────────────────────────
+check('bullets + highlights render as list with <mark>',
+  core.formatSummaryHtml('- Budget approved for **Q3**\n- Kai owns follow-up'),
+  '<ul><li>Budget approved for <mark>Q3</mark></li><li>Kai owns follow-up</li></ul>');
+
+check('plain lines render as paragraphs',
+  core.formatSummaryHtml('Intro line\n- one bullet'),
+  '<p>Intro line</p><ul><li>one bullet</li></ul>');
+
+check('html in model output is escaped',
+  core.formatSummaryHtml('- use <script> tags "carefully" & safely'),
+  '<ul><li>use &lt;script&gt; tags &quot;carefully&quot; &amp; safely</li></ul>');
+
+check('zh bullets render fine',
+  core.formatSummaryHtml('- 预算已批准，负责人是**陈伟**'),
+  '<ul><li>预算已批准，负责人是<mark>陈伟</mark></li></ul>');
+
+// ── escapeHtml / sanitizeFilename ──────────────────────────────────────────
+check('escapeHtml escapes the four specials',
+  core.escapeHtml('<a href="x">&'),
+  '&lt;a href=&quot;x&quot;&gt;&amp;');
+
+check('sanitizeFilename strips forbidden chars, keeps zh, caps at 80',
+  core.sanitizeFilename('预算会议: Q3/Q4 review?' + 'x'.repeat(100)),
+  ('预算会议 Q3Q4 review' + 'x'.repeat(100)).slice(0, 80).trim().slice(0, 80));
+
+// ── meeting.html wiring (no duplicated logic left inline) ─────────────────
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'meeting.html'), 'utf8');
+
+check('meeting.html loads core.js', html.includes('<script src="core.js">'), true);
+check('meeting.html has no inline QUESTION_PATTERN', html.includes('QUESTION_PATTERN ='), false);
+check('meeting.html has no inline STOPWORDS', html.includes('STOPWORDS ='), false);
+check('meeting.html has no raw word-splitting left', /split\(\/\\s\+\/\)/.test(html), false);
+
+// ── Report ─────────────────────────────────────────────────────────────────
+console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
+for (const f of failures) {
+  console.error(`\nFAIL: ${f.name}\n  expected: ${JSON.stringify(f.expected)}\n  actual:   ${JSON.stringify(f.actual)}`);
+}
+process.exit(failed ? 1 : 0);

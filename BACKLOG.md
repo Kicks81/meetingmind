@@ -44,14 +44,12 @@ never silently delete an item — strike it through with a reason.
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
 
 ## P3 — Engineering health
-- [ ] **L0. Extract pure text logic + eval harness.** Move question detection, word
-  counting, vault search, markdown formatting into a shared module loadable by both
-  meeting.html and Node; add `evals/run.mjs` with zh/en/mixed fixtures. (Do this
-  before or together with Z1–Z3 so they land tested.)
 - [ ] **L1. Replace deprecated ScriptProcessorNode with AudioWorklet.**
 - [ ] **L2. Key hygiene.** Warn that Save Config writes keys in plaintext; consider
   encrypting the config export with a passphrase.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
-(move completed items here with commit hash)
+- [x] **L0. Extract pure text logic + eval harness.** core.js (UMD, shared by
+  meeting.html and Node) + evals/run.mjs: 22 passing checks, 6 known-bug fixtures
+  documenting Z1/Z2/Z3 that flip to failures when the bug is fixed. (commit: see git log, `L0:`)

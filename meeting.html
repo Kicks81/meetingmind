@@ -416,7 +416,12 @@
   <span style="margin-left:auto;">MeetingMind &mdash; Powered by OpenRouter</span>
 </footer>
 
+<script src="core.js"></script>
 <script>
+  // Pure text-processing logic lives in core.js (shared with the Node eval
+  // harness in evals/) — aliased here so call sites stay unchanged.
+  const { extractQuestions, questionKey, countWords, escapeHtml, formatSummaryHtml, sanitizeFilename } = MeetingCore;
+
   // ── State ────────────────────────────────────────────────────────────────
   let isRecording = false;
   let finalTranscript = '';
@@ -430,7 +435,6 @@
   let meetingContext = '';        // rolling plain-text of full meeting so far
 
   const SUMMARY_WORD_THRESHOLD = 80;  // trigger summary every ~80 new words
-  const QUESTION_PATTERN = /[^.!?]*\?/g;
 
   // ── Obsidian vault index (in-memory, keyword search) ─────────────────────
   let vaultNotes = []; // { path, content }
@@ -552,29 +556,6 @@
     clearProcessing();
   }
 
-  // Renders the model's "- bullet" / "**highlight**" markdown into safe HTML —
-  // applied once streaming finishes rather than per-chunk, so an in-progress
-  // "**" mid-stream never renders as a broken tag.
-  function formatSummaryHtml(text) {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    let html = '';
-    let inList = false;
-    for (const line of lines) {
-      const isBullet = /^[-*•]\s+/.test(line);
-      const raw = line.replace(/^[-*•]\s+/, '');
-      const content = escapeHtml(raw).replace(/\*\*(.+?)\*\*/g, '<mark>$1</mark>');
-      if (isBullet) {
-        if (!inList) { html += '<ul>'; inList = true; }
-        html += `<li>${content}</li>`;
-      } else {
-        if (inList) { html += '</ul>'; inList = false; }
-        html += `<p>${content}</p>`;
-      }
-    }
-    if (inList) html += '</ul>';
-    return html;
-  }
-
   // ── Obsidian vault loading & keyword search ──────────────────────────────
   function loadVaultFiles(event) {
     const files = [...event.target.files].filter(f => f.name.toLowerCase().endsWith('.md'));
@@ -591,44 +572,15 @@
     });
   }
 
-  const STOPWORDS = new Set(['the','a','an','is','are','was','were','be','been','to','of','in','on','for','and','or','with','that','this','it','what','who','when','where','why','how','do','does','did','can','could','will','would','should','i','you','we','they','he','she']);
-
   function searchVault(query, topN = 4) {
-    if (!vaultNotes.length) return [];
-    const terms = [...new Set(query.toLowerCase().match(/[a-z0-9']+/g) || [])].filter(t => t.length > 2 && !STOPWORDS.has(t));
-    if (!terms.length) return [];
-
-    const scored = vaultNotes.map(note => {
-      const lower = note.content.toLowerCase();
-      let score = 0;
-      let firstMatchIdx = -1;
-      for (const term of terms) {
-        const idx = lower.indexOf(term);
-        if (idx === -1) continue;
-        score++; // one point per distinct matched term
-        if (firstMatchIdx === -1 || idx < firstMatchIdx) firstMatchIdx = idx;
-      }
-      return { note, score, firstMatchIdx };
-    }).filter(s => s.score > 0);
-
-    scored.sort((a, b) => b.score - a.score);
-
-    return scored.slice(0, topN).map(({ note, firstMatchIdx }) => {
-      const start = Math.max(0, firstMatchIdx - 200);
-      const excerpt = note.content.slice(start, start + 1000);
-      return { path: note.path, excerpt };
-    });
+    return MeetingCore.searchVault(query, vaultNotes, topN);
   }
 
   // ── Question Detection & Answering ───────────────────────────────────────
   async function detectAndAnswerQuestions(text) {
-    const matches = text.match(QUESTION_PATTERN) || [];
-    for (const q of matches) {
-      const clean = q.trim();
-      if (clean.length < 10) continue;
-
+    for (const clean of extractQuestions(text)) {
       // Dedupe by normalised form
-      const key = clean.toLowerCase().replace(/\s+/g, ' ');
+      const key = questionKey(clean);
       if (seenQuestions.has(key)) continue;
       seenQuestions.add(key);
 
@@ -1017,8 +969,7 @@
     segmentCount++;
     document.getElementById('segCount').textContent = segmentCount;
 
-    const words = text.trim().split(/\s+/).length;
-    totalWords += words;
+    totalWords += countWords(text);
     document.getElementById('wordCount').textContent = `${totalWords} words transcribed`;
 
     createTranscriptSegment(text, false);
@@ -1035,7 +986,7 @@
   }
 
   function checkSummaryTrigger() {
-    const words = pendingText.trim().split(/\s+/).filter(Boolean).length;
+    const words = countWords(pendingText);
     if (words >= SUMMARY_WORD_THRESHOLD) {
       const batch = pendingText;
       pendingText = '';
@@ -1045,7 +996,7 @@
       // Also trigger after 30s of silence
       clearTimeout(summaryTimer);
       summaryTimer = setTimeout(() => {
-        if (pendingText.trim().split(/\s+/).length >= 10) {
+        if (countWords(pendingText) >= 10) {
           const batch = pendingText;
           pendingText = '';
           generateSummary(batch);
@@ -1086,7 +1037,7 @@
       document.getElementById('statusText').textContent = 'Stopped';
 
       // Final summary of remaining text
-      if (pendingText.trim().split(/\s+/).length >= 5) {
+      if (countWords(pendingText) >= 5) {
         await generateSummary(pendingText);
         pendingText = '';
       }
@@ -1118,10 +1069,6 @@
   }
 
   // ── Export to Obsidian ───────────────────────────────────────────────────
-  function sanitizeFilename(name) {
-    return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 80);
-  }
-
   async function suggestMeetingTitle() {
     const content = (meetingContext || finalTranscript).trim();
     if (!document.getElementById('apiKey').value.trim() || !content) return null;
@@ -1273,10 +1220,6 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   // ── Helpers ───────────────────────────────────────────────────────────────
   function timestamp() {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  }
-
-  function escapeHtml(str) {
-    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   // Only snap to bottom if the user was already near it — otherwise, several
