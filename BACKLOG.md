@@ -35,6 +35,12 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **U3. Oversized exports no longer silently download.** An export bigger than
+  one obsidian:// URI now bisects into multiple URI-sized appends (600ms apart, same
+  note) instead of falling back to a .md download that nobody notices. Export state
+  commits only after a chunk is actually handed off. Recovered all previously
+  downloaded chunk files (07-02 → 07-07) from Downloads into the vault. Also: 204
+  for /favicon.ico. (commit `U3:`)
 - [x] **U2. Re-send meeting to Obsidian.** Chunks are flagged "exported" when the
   obsidian:// URI launches, but the hand-off is fire-and-forget — a wrong vault name
   at export time silently loses the note while the app thinks it's sent. "Add to

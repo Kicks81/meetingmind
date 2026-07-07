@@ -33,6 +33,7 @@ const STATIC_FILES = {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
 
 const httpServer = http.createServer((req, res) => {
+  if (req.url === '/favicon.ico') { res.writeHead(204); res.end(); return; }
   const file = STATIC_FILES[req.url.split('?')[0]];
   if (!file) { res.writeHead(404); res.end('not found'); return; }
   const filePath = path.join(__dirname, file);

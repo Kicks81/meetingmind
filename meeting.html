@@ -1156,7 +1156,7 @@
 
       // Ship whatever's left to Obsidian automatically — no manual click
       // needed; this is a silent no-op if no vault name is configured.
-      await sendObsidianChunk();
+      await sendAllObsidianChunks();
     }
   }
 
@@ -1222,9 +1222,19 @@
     return { transcriptEls, summaryEls, qaEls };
   }
 
-  async function buildObsidianChunkMarkdown() {
-    const { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
+  // Builds the next chunk WITHOUT mutating export state — the caller commits
+  // (note path, chunk number, exported flags) only after a successful send,
+  // so a failed/oversized attempt can be retried with fewer items.
+  async function buildObsidianChunkMarkdown(maxItems = Infinity) {
+    let { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
     if (!transcriptEls.length && !summaryEls.length && !qaEls.length) return null;
+
+    if (maxItems !== Infinity) {
+      const keep = new Set([...transcriptEls, ...summaryEls, ...qaEls].slice(0, maxItems));
+      transcriptEls = transcriptEls.filter(el => keep.has(el));
+      summaryEls = summaryEls.filter(el => keep.has(el));
+      qaEls = qaEls.filter(el => keep.has(el));
+    }
 
     const isFirstChunk = !obsidianNotePath;
 
@@ -1238,10 +1248,11 @@
     const dateStr = new Date().toISOString().slice(0, 10);
     const timeStr = timestamp();
 
+    let notePath = obsidianNotePath;
     if (isFirstChunk) {
       const yearMonth = dateStr.slice(0, 7);
       const baseFolder = document.getElementById('obsidianFolder').value.trim() || 'Meeting Notes';
-      obsidianNotePath = `${baseFolder}/${yearMonth}/${dateStr} - ${obsidianMeetingTitle}`;
+      notePath = `${baseFolder}/${yearMonth}/${dateStr} - ${obsidianMeetingTitle}`;
     }
 
     const transcriptLines = transcriptEls.map(el => `**${el.querySelector('.transcript-time').textContent}** — ${el.querySelector('.seg-text').textContent}`);
@@ -1255,8 +1266,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       ? `---\ntitle: ${obsidianMeetingTitle}\ndate: ${dateStr}\ntags: [meeting, meetingmind]\n---\n\n# ${obsidianMeetingTitle}\n${dateStr} ${timeStr}\n\n${chunkBody}`
       : `\n\n${chunkBody}`; // appended chunks skip frontmatter/title — those only belong at the top of the file
 
-    obsidianChunkNumber++;
-    return { notePath: obsidianNotePath, md, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls] };
+    return { notePath, md, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls] };
   }
 
   function downloadMarkdownFile(notePath, md) {
@@ -1274,14 +1284,10 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   const OBSIDIAN_URI_LENGTH_LIMIT = 30000;
   const OBSIDIAN_AUTO_SPLIT_THRESHOLD = OBSIDIAN_URI_LENGTH_LIMIT * 0.75; // leave headroom before hitting the hard limit
 
-  async function sendObsidianChunk() {
-    // Tolerate a pasted vault *path* — Obsidian's URI needs the vault name.
-    const vault = MeetingCore.normalizeVaultName(document.getElementById('obsidianVault').value);
-    if (!vault) return false;
+  // Injectable so tests can capture the hand-off instead of navigating.
+  let obsidianNavigate = (uri) => { window.location.href = uri; };
 
-    const chunk = await buildObsidianChunkMarkdown();
-    if (!chunk) return false; // nothing new since the last chunk
-
+  function buildObsidianUri(vault, chunk) {
     // Build the query string manually with encodeURIComponent (-> %20 for
     // spaces) rather than URLSearchParams (-> "+" for spaces, the HTML-form
     // convention) — Obsidian's URI parser doesn't necessarily decode "+"
@@ -1293,20 +1299,54 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       `content=${encodeURIComponent(chunk.md)}`
     ];
     if (chunk.append) parts.push('append=true');
-    const uri = `obsidian://new?${parts.join('&')}`;
+    return `obsidian://new?${parts.join('&')}`;
+  }
+
+  // Sends ONE URI-sized chunk. When the pending content is too big for a
+  // single obsidian:// URI it bisects — fewer and fewer items — until it
+  // fits; the remainder stays un-exported for the next call. (The old
+  // behaviour silently downloaded oversized chunks as .md files, which is
+  // how whole meetings "disappeared" into the Downloads folder.)
+  async function sendObsidianChunk(maxItems = Infinity) {
+    // Tolerate a pasted vault *path* — Obsidian's URI needs the vault name.
+    const vault = MeetingCore.normalizeVaultName(document.getElementById('obsidianVault').value);
+    if (!vault) return false;
+
+    const chunk = await buildObsidianChunkMarkdown(maxItems);
+    if (!chunk) return false; // nothing new since the last chunk
+
+    const uri = buildObsidianUri(vault, chunk);
 
     if (uri.length > OBSIDIAN_URI_LENGTH_LIMIT) {
-      // Even this one chunk is too big by itself — fall back to a download
-      // for just this chunk rather than blocking the whole export. This
-      // breaks the "one note" goal for this specific chunk only.
-      downloadMarkdownFile(`${chunk.notePath} (chunk ${obsidianChunkNumber - 1})`, chunk.md);
-      console.warn('This chunk was too long for the direct Obsidian handoff — downloaded instead:', chunk.notePath);
+      if (chunk.exportedEls.length > 1) {
+        return sendObsidianChunk(Math.ceil(chunk.exportedEls.length / 2));
+      }
+      // A single element that alone exceeds the URI limit (rare) — download
+      // it so nothing is lost, and say so loudly instead of a console.warn
+      // nobody sees.
+      downloadMarkdownFile(`${chunk.notePath} (oversized part)`, chunk.md);
+      alert(`One section was too large for the Obsidian hand-off and was saved to your Downloads folder instead:\n${chunk.notePath} (oversized part).md\n\nMove it into your vault manually.`);
     } else {
-      window.location.href = uri;
+      obsidianNavigate(uri);
     }
 
+    // Commit export state only now that the chunk actually went somewhere.
+    obsidianNotePath = chunk.notePath;
+    obsidianChunkNumber++;
     chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; });
     return true;
+  }
+
+  // Drains everything un-exported as a series of URI-sized appends. The
+  // pause between sends gives Obsidian time to process each URI — rapid
+  // back-to-back protocol navigations can drop some.
+  async function sendAllObsidianChunks() {
+    let sentAny = false;
+    while (await sendObsidianChunk()) {
+      sentAny = true;
+      await new Promise(r => setTimeout(r, 600));
+    }
+    return sentAny;
   }
 
   // Called after every new final transcript segment — cheaply estimates the
@@ -1330,7 +1370,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   async function addToObsidian() {
     const vault = document.getElementById('obsidianVault').value.trim();
     if (!vault) { alert('Please enter your Obsidian vault name first.'); return; }
-    const sent = await sendObsidianChunk();
+    const sent = await sendAllObsidianChunks();
     if (sent) return;
 
     const hasContent = document.querySelector('#transcriptPanel .transcript-segment.final, #summaryPanel .summary-block, #qaPanel .qa-card');
@@ -1341,12 +1381,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       obsidianNotePath = null;
       obsidianMeetingTitle = null;
       obsidianChunkNumber = 1;
-      await sendObsidianChunk();
-      // Long meetings exceed one URI — keep sending until nothing is left.
-      while (document.querySelector('#transcriptPanel .transcript-segment.final:not([data-obsidian-exported])')) {
-        const more = await sendObsidianChunk();
-        if (!more) break;
-      }
+      await sendAllObsidianChunks();
     }
   }
 
