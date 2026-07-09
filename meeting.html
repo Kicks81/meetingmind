@@ -684,6 +684,22 @@
   let extraSourceNodes = [];
   let micGainNode = null;     // gates the mic into the mix (mute = gain 0)
   let micEnabled = true;
+  let lastAsrFrameAt = 0;     // watchdog: when BytePlus last sent us anything
+
+  // Silent-stall watchdog (distinct from the reconnect-on-close path): the
+  // BytePlus session can die *logically* — frames just stop — while both
+  // sockets stay open, so no close event ever fires and transcription
+  // quietly halts mid-meeting. During recording BytePlus streams frames
+  // continuously (even during silence); >25s of nothing means the session
+  // is dead. Closing the socket hands off to the normal reconnect loop.
+  setInterval(() => {
+    if (!isRecording || !asrReady || !lastAsrFrameAt) return;
+    const quiet = Date.now() - lastAsrFrameAt;
+    if (quiet > 25000 && asrSocket && asrSocket.readyState === WebSocket.OPEN) {
+      console.warn(`ASR watchdog: no frames for ${Math.round(quiet / 1000)}s — forcing reconnect`);
+      asrSocket.close(); // onclose → scheduleAsrReconnect
+    }
+  }, 5000);
 
   function toggleMic() {
     micEnabled = !micEnabled;
@@ -1127,6 +1143,7 @@
   }
 
   async function handleAsrFrame(buf) {
+    lastAsrFrameAt = Date.now();
     const view = new DataView(buf);
     const headerBytes = (view.getUint8(0) & 0x0f) * 4;
     const messageType = view.getUint8(1) >> 4;
@@ -1338,6 +1355,7 @@
           };
           await sendFullClientRequest();
           asrReady = true;
+          lastAsrFrameAt = Date.now(); // fresh session — restart the watchdog clock
           resolve();
         } else if (msg.type === 'error') {
           reject(new Error('BytePlus ASR error: ' + msg.message));
