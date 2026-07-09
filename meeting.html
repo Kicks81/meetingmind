@@ -751,6 +751,12 @@
 
   // ── ASR (BytePlus streaming) state ──────────────────────────────────────
   let asrSocket = null;
+  // Bumped on every start/stop of the recording session. Any in-flight
+  // openAsrSession()/scheduleAsrReconnect() work captures the epoch it was
+  // started under and discards its result if the epoch has since moved on
+  // (e.g. the user hit Stop while a reconnect was mid-flight) instead of
+  // resurrecting a socket for a session that no longer exists.
+  let asrEpoch = 0;
   let audioCtx = null;
   let mediaStream = null;
   let systemStream = null;
@@ -1361,6 +1367,7 @@
     const relayUrl = document.getElementById('relayUrl').value.trim() || 'ws://localhost:8765';
     if (!apiKey) { alert('Please enter your BytePlus API key.'); throw new Error('missing BytePlus key'); }
 
+    asrEpoch++; // new session — invalidate any straggling reconnect/openAsrSession from a prior one
     finalizedUtteranceCount = 0;
     interimEl = null;
 
@@ -1475,26 +1482,36 @@
   // Opens one relay→BytePlus session and resolves when it's ready for
   // audio. An unexpected mid-meeting close triggers the reconnect loop.
   function openAsrSession(apiKey, relayUrl) {
+    const myEpoch = asrEpoch; // frozen at call time; a stop() bumps asrEpoch and orphans this session
     finalizedUtteranceCount = 0; // each BytePlus session numbers utterances from scratch
-    asrSocket = new WebSocket(relayUrl);
-    asrSocket.binaryType = 'arraybuffer';
+    const socket = new WebSocket(relayUrl);
+    asrSocket = socket;
+    socket.binaryType = 'arraybuffer';
 
     return new Promise((resolve, reject) => {
-      asrSocket.onerror = () => reject(new Error(`Could not reach the ASR relay at ${relayUrl}. Start it with "node relay.js" first.`));
-      asrSocket.onclose = () => reject(new Error('ASR relay connection closed before it was ready.'));
-      asrSocket.onopen = () => {
-        asrSocket.send(JSON.stringify({ apiKey, mode: ASR_MODE, resourceId: ASR_RESOURCE_ID }));
+      socket.onerror = () => reject(new Error(`Could not reach the ASR relay at ${relayUrl}. Start it with "node relay.js" first.`));
+      socket.onclose = () => reject(new Error('ASR relay connection closed before it was ready.'));
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ apiKey, mode: ASR_MODE, resourceId: ASR_RESOURCE_ID }));
       };
-      asrSocket.onmessage = async (e) => {
+      socket.onmessage = async (e) => {
         if (typeof e.data !== 'string') return; // binary frames only arrive after 'ready'
         const msg = JSON.parse(e.data);
         if (msg.type === 'ready') {
-          asrSocket.onmessage = (ev) => handleAsrFrame(ev.data);
-          asrSocket.onclose = () => {
+          if (myEpoch !== asrEpoch) {
+            // Stopped (or restarted) while this session was still connecting —
+            // don't let it become live; just close it and let the promise dangle.
+            socket.close();
+            return;
+          }
+          socket.onmessage = (ev) => handleAsrFrame(ev.data);
+          socket.onclose = () => {
+            if (myEpoch !== asrEpoch) return; // this epoch was already stopped/replaced
             asrReady = false;
-            if (isRecording) scheduleAsrReconnect(apiKey, relayUrl);
+            if (isRecording) scheduleAsrReconnect(apiKey, relayUrl, myEpoch);
           };
           await sendFullClientRequest();
+          if (myEpoch !== asrEpoch) { socket.close(); reject(new Error('stale ASR session discarded')); return; }
           asrReady = true;
           lastAsrFrameAt = Date.now(); // fresh session — restart the watchdog clock
           resolve();
@@ -1510,17 +1527,19 @@
   // backoff for as long as the meeting is running; audio capture keeps
   // going locally the whole time — only the unsent seconds are lost.
   let asrReconnecting = false;
-  async function scheduleAsrReconnect(apiKey, relayUrl) {
+  async function scheduleAsrReconnect(apiKey, relayUrl, epoch) {
     if (asrReconnecting) return;
+    if (epoch !== asrEpoch) return; // stale reconnect request from an already-stopped session
     asrReconnecting = true;
     const delays = [1000, 2000, 4000, 8000, 15000];
-    for (let attempt = 0; isRecording; attempt++) {
+    for (let attempt = 0; isRecording && epoch === asrEpoch; attempt++) {
       const delay = delays[Math.min(attempt, delays.length - 1)];
       document.getElementById('statusText').textContent = `Reconnecting ASR (attempt ${attempt + 1})...`;
       await new Promise(r => setTimeout(r, delay));
-      if (!isRecording) break;
+      if (!isRecording || epoch !== asrEpoch) break;
       try {
         await openAsrSession(apiKey, relayUrl);
+        if (epoch !== asrEpoch) break; // stopped while connecting; openAsrSession already discarded it
         document.getElementById('statusText').textContent = 'Recording';
         console.log('ASR reconnected after', attempt + 1, 'attempt(s)');
         break;
@@ -1528,11 +1547,12 @@
         console.warn('ASR reconnect attempt failed:', err.message);
       }
     }
-    if (!isRecording) document.getElementById('statusText').textContent = 'Stopped';
+    if (!isRecording && epoch === asrEpoch) document.getElementById('statusText').textContent = 'Stopped';
     asrReconnecting = false;
   }
 
   async function stopRecognition() {
+    asrEpoch++; // orphan any in-flight openAsrSession()/scheduleAsrReconnect() from this session
     asrReady = false;
     if (processorNode) { processorNode.onaudioprocess = null; processorNode.disconnect(); processorNode = null; }
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
@@ -1546,9 +1566,10 @@
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (systemStream) { systemStream.getTracks().forEach(t => t.stop()); systemStream = null; }
     if (audioCtx) { await audioCtx.close(); audioCtx = null; }
-    if (asrSocket && asrSocket.readyState === WebSocket.OPEN) {
-      await sendAudioChunk(new Uint8Array(0), true);
-      setTimeout(() => asrSocket && asrSocket.close(), 1500);
+    const socketToClose = asrSocket; // capture before nulling, or the deferred close() below is a no-op
+    if (socketToClose && socketToClose.readyState === WebSocket.OPEN) {
+      await sendAudioChunk(new Uint8Array(0), true); // still uses global asrSocket — send before nulling it
+      setTimeout(() => socketToClose.close(), 1500);
     }
     asrSocket = null;
     if (interimEl) { interimEl.remove(); interimEl = null; }
@@ -1746,11 +1767,20 @@
   }
 
   // ── Controls ─────────────────────────────────────────────────────────────
+  // Guards the async gap between clicking Start and isRecording actually
+  // flipping true — without it a double-click (or a click during the
+  // startRecognition awaits) re-enters this branch and spins up a second
+  // getUserMedia stream + ASR socket while the first is still connecting,
+  // leaking both when only one ever gets torn down.
+  let isStartingRecording = false;
+
   async function toggleRecording() {
     if (!isRecording) {
+      if (isStartingRecording) return;
       const key = document.getElementById('apiKey').value.trim();
       if (!key) { alert('Please enter your OpenRouter API key first.'); return; }
 
+      isStartingRecording = true;
       document.getElementById('statusText').textContent = 'Connecting...';
       try {
         await startRecognition();
@@ -1759,8 +1789,10 @@
         alert(err.message);
         document.getElementById('statusText').textContent = 'Ready';
         await stopRecognition();
+        isStartingRecording = false;
         return;
       }
+      isStartingRecording = false;
 
       isRecording = true;
       document.getElementById('recordBtn').textContent = 'Stop Meeting';
@@ -1791,8 +1823,8 @@
     }
   }
 
-  function clearAll() {
-    if (isRecording) toggleRecording();
+  async function clearAll() {
+    if (isRecording) await toggleRecording(); // wait out the full stop sequence before wiping state below
     document.getElementById('transcriptPanel').innerHTML = '<div class="empty-state"><div class="icon">&#127908;</div>Enter your OpenRouter and BytePlus API keys, start the relay (<code>node relay.js</code>), then click <strong>Start Meeting</strong> to begin live transcription.</div>';
     document.getElementById('summaryPanel').innerHTML = '<div class="empty-state"><div class="icon">&#128221;</div>Summary updates automatically as the meeting progresses.</div>';
     document.getElementById('qaPanel').innerHTML = '<div class="empty-state"><div class="icon">&#128161;</div>Questions detected during the meeting will be answered here automatically.</div>';

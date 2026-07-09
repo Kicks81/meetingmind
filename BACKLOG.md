@@ -30,6 +30,12 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **C3. Fix ASR socket lifecycle and reconnect races.** Eliminated leaked sockets,
+  fixed stop-vs-reconnect race condition (e.g., calling stop during backoff could
+  kill a socket that reconnect was building), fixed double-start when isRecording
+  toggled twice rapidly, and fixed clearAll race where pending reconnects could
+  arrive after reset. All socket lifecycle transitions now guard against concurrent
+  state changes; guard clauses in place before every socket I/O. (commit `C3:`)
 - [x] **C2. LLM pipeline failure paths: never lose transcript text, never stick the spinner.**
   Enhanced error handling across all LLM call sites (rolling summary, final synthesis,
   Q&A answers): API errors / mid-stream network drops / thrown failures are now caught,
