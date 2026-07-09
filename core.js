@@ -32,6 +32,27 @@
     return question.toLowerCase().replace(/\s+/g, ' ');
   }
 
+  // ── Action-item detection (U11) ─────────────────────────────────────────
+  // The LLM is asked to list commitments/action items found in a chunk of
+  // speech, one per line prefixed with "- ", or reply "NONE" if there
+  // aren't any. Parse that reply defensively: strip the bullet marker,
+  // drop stray blank/"NONE" lines, and filter out fragments too short to
+  // be a real action (CJK gets a lower floor, same rationale as
+  // extractQuestions — a whole commitment fits in very few characters).
+  function parseActionList(raw) {
+    if (!raw || typeof raw !== 'string') return [];
+    return raw.trim().split('\n')
+      .map(l => l.replace(/^[-*•]\s*/, '').trim())
+      .filter(l => l && l.toUpperCase() !== 'NONE')
+      .filter(l => l.length >= (HAS_CJK.test(l) ? 4 : 8));
+  }
+
+  // Normalised form used to dedupe repeated/dismissed action items —
+  // mirrors questionKey.
+  function actionKey(action) {
+    return action.toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
   // ── Word counting (summary triggers, footer counter) ───────────────────
   // CJK text has no spaces, so whitespace splitting would count a whole
   // Chinese utterance as one "word" and the word-threshold triggers would
@@ -260,6 +281,8 @@
     extractVaultFolders,
     extractQuestions,
     questionKey,
+    parseActionList,
+    actionKey,
     countWords,
     tokenizeQuery,
     searchVault,

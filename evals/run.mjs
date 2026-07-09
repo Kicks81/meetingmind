@@ -77,6 +77,43 @@ check('dedupe key normalises case and whitespace',
   core.questionKey('Who   OWNS the AFO  integration?'),
   'who owns the afo integration?');
 
+// ── parseActionList / actionKey (U11 action items) ─────────────────────────
+check('en: parses bulleted action list',
+  core.parseActionList('- I will send the report by Friday\n- Please follow up with the client'),
+  ['I will send the report by Friday', 'Please follow up with the client']);
+
+check('en: NONE reply yields no actions',
+  core.parseActionList('NONE'),
+  []);
+
+check('en: blank lines and stray NONE lines are dropped',
+  core.parseActionList('- Send the invoice\n\nNONE\n- Call back tomorrow'),
+  ['Send the invoice', 'Call back tomorrow']);
+
+check('en: short fragments below the length floor are dropped',
+  core.parseActionList('- ok\n- Send the invoice by Monday'),
+  ['Send the invoice by Monday']);
+
+check('zh: parses bulleted action list',
+  core.parseActionList('- 请你跟进一下这个客户\n- 我明天发给你报告'),
+  ['请你跟进一下这个客户', '我明天发给你报告']);
+
+check('zh: short-but-real action passes the CJK length floor',
+  core.parseActionList('- 明天发货'),
+  ['明天发货']);
+
+check('mixed: zh action referencing an en term',
+  core.parseActionList('- 我会跟进AFO integration的进度'),
+  ['我会跟进AFO integration的进度']);
+
+check('actionKey: normalises case and whitespace',
+  core.actionKey('  Send   the REPORT by Friday '),
+  'send the report by friday');
+
+check('actionKey: zh action key is case/whitespace normalised (no-op on CJK)',
+  core.actionKey('请你跟进一下这个客户'),
+  '请你跟进一下这个客户');
+
 // ── countWords ─────────────────────────────────────────────────────────────
 check('en: counts whitespace-separated words',
   core.countWords('  the quick brown fox jumps  '),

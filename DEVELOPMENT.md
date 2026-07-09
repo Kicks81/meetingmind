@@ -205,6 +205,20 @@ audio faster than the relay/network can drain it?), and whether BytePlus's
 duration-based resource (`volc.seedasr.sauc.duration`) exhibits any session-length
 throttling — that would be provider-side and outside this codebase's control.
 
+### D17. Q&A panel split layout and action-item dismissal (2026-07-10)
+The Q&A panel is split into two independently-scrolling halves (top: Q&A,
+bottom: Action Required) so long meetings don't starve the action list at the
+bottom. Each gets ~50% flex space and `min-height` to ensure both remain usable.
+Action items are user-dismissible (✕ button) — deletion moves the action's key
+into `dismissedActions`, which persists across the session. Reason: the LLM will
+likely re-extract the same false-positive action from similar speech later; by
+tracking dismissed keys, we prevent it from re-surfacing. Final synthesis uses the
+curated list (actions not in `dismissedActions`) verbatim instead of asking the
+LLM to re-derive actions — this ensures a user's deletions are honored in the
+exported note. The same dismissal pattern could apply to Q&A in future (backlog item).
+Evals cover parseActionList/actionKey (zh/en/mixed); action **detection** and UI
+integration require a live BytePlus key and are manually tested only.
+
 ### D14. LLM pipeline error resilience — never lose transcript text
 All LLM call sites (rolling summary, final synthesis, Q&A answers) wrap streaming
 calls in try-catch-finally: request failures / mid-stream network drops / JSON parse

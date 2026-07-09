@@ -162,3 +162,10 @@ never silently delete an item — strike it through with a reason.
 - [x] **L0. Extract pure text logic + eval harness.** core.js (UMD, shared by
   meeting.html and Node) + evals/run.mjs: 22 passing checks, 6 known-bug fixtures
   documenting Z1/Z2/Z3 that flip to failures when the bug is fixed. (commit: see git log, `L0:`)
+- [x] **U11. Action-item detection in Q&A panel.** Split Q&A into two independently-
+  scrolling halves: top half for Q&A, bottom half for "Action Required". Per-utterance LLM
+  call extracts commitments and action items, displayed as dismissible cards. User-deleted
+  actions are permanently removed (moved to `dismissedActions`) so they never re-surface
+  from similar speech. Core.parseActionList/actionKey (pure, eval-covered) parse/dedupe
+  actions. Final synthesis uses the curated list verbatim, never re-derives, so false
+  positives deleted by the user don't reappear in the exported note. (commit `U11:`)
