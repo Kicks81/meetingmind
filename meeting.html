@@ -805,13 +805,22 @@
     ];
 
     const summary = await streamIntoElement(textEl, messages);
-    if (summary) {
+    if (summary && summary.trim()) {
       meetingContext += '\n' + summary;
       textEl.innerHTML = formatSummaryHtml(summary);
       // The final markdown render is taller than the streamed plain text
       // (list markup, line spacing) — re-pin AFTER it, or the last bullets
       // sit below the fold.
       scrollToBottomIfNearBottom(panel);
+    } else {
+      // Empty/failed response: don't leave a blank block cluttering the
+      // panel, and don't lose the speech — put it back at the front of the
+      // queue so the next update covers it.
+      block.remove();
+      summaryCount--;
+      document.getElementById('summaryCount').textContent = summaryCount;
+      pendingText = newText + ' ' + pendingText;
+      console.warn('Summary update came back empty — removed the blank block and re-queued the text for the next update');
     }
     clearProcessing();
   }
