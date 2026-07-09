@@ -1302,34 +1302,39 @@
   }
 
   async function handleAsrFrame(buf) {
-    lastAsrFrameAt = Date.now();
-    const view = new DataView(buf);
-    const headerBytes = (view.getUint8(0) & 0x0f) * 4;
-    const messageType = view.getUint8(1) >> 4;
-    const serialization = view.getUint8(2) >> 4;
-    const compression = view.getUint8(2) & 0x0f;
-    let offset = headerBytes;
+    try {
+      const view = new DataView(buf);
+      const headerBytes = (view.getUint8(0) & 0x0f) * 4;
+      const messageType = view.getUint8(1) >> 4;
+      const serialization = view.getUint8(2) >> 4;
+      const compression = view.getUint8(2) & 0x0f;
+      let offset = headerBytes;
 
-    if (messageType === MSG_ERROR_RESPONSE) {
-      const errorCode = view.getUint32(offset, false); offset += 4;
-      const msgSize = view.getUint32(offset, false); offset += 4;
-      const msg = new TextDecoder().decode(new Uint8Array(buf, offset, msgSize));
-      console.error('ASR error', errorCode, msg);
-      return;
+      if (messageType === MSG_ERROR_RESPONSE) {
+        const errorCode = view.getUint32(offset, false); offset += 4;
+        const msgSize = view.getUint32(offset, false); offset += 4;
+        const msg = new TextDecoder().decode(new Uint8Array(buf, offset, msgSize));
+        console.error('ASR error', errorCode, msg);
+        lastAsrFrameAt = Date.now(); // a well-formed error frame is still proof the stream is alive
+        return;
+      }
+
+      if (messageType !== MSG_FULL_SERVER_RESPONSE) return;
+
+      const flags = view.getUint8(1) & 0x0f;
+      if (flags & 0b0001) offset += 4; // sequence field present only when this bit is set
+      const payloadSize = view.getUint32(offset, false); offset += 4;
+      let payload = new Uint8Array(buf, offset, payloadSize);
+      if (compression === COMP_GZIP) payload = await gunzip(payload);
+      if (serialization !== SER_JSON) return;
+
+      const rawText = new TextDecoder().decode(payload);
+      const json = JSON.parse(rawText);
+      lastAsrFrameAt = Date.now(); // only mark the stream alive once a frame actually parsed
+      processAsrResult(json);
+    } catch (err) {
+      console.error('handleAsrFrame: malformed ASR frame, ignoring', err);
     }
-
-    if (messageType !== MSG_FULL_SERVER_RESPONSE) return;
-
-    const flags = view.getUint8(1) & 0x0f;
-    if (flags & 0b0001) offset += 4; // sequence field present only when this bit is set
-    const payloadSize = view.getUint32(offset, false); offset += 4;
-    let payload = new Uint8Array(buf, offset, payloadSize);
-    if (compression === COMP_GZIP) payload = await gunzip(payload);
-    if (serialization !== SER_JSON) return;
-
-    const rawText = new TextDecoder().decode(payload);
-    const json = JSON.parse(rawText);
-    processAsrResult(json);
   }
 
   function processAsrResult(json) {
@@ -1509,7 +1514,13 @@
       };
       socket.onmessage = async (e) => {
         if (typeof e.data !== 'string') return; // binary frames only arrive after 'ready'
-        const msg = JSON.parse(e.data);
+        let msg;
+        try {
+          msg = JSON.parse(e.data);
+        } catch (err) {
+          console.error('openAsrSession: malformed pre-ready message, ignoring', err);
+          return;
+        }
         if (msg.type === 'ready') {
           if (myEpoch !== asrEpoch) {
             // Stopped (or restarted) while this session was still connecting —
@@ -1517,7 +1528,7 @@
             socket.close();
             return;
           }
-          socket.onmessage = (ev) => handleAsrFrame(ev.data);
+          socket.onmessage = (ev) => { handleAsrFrame(ev.data).catch(err => console.error('handleAsrFrame rejected:', err)); };
           socket.onclose = () => {
             if (myEpoch !== asrEpoch) return; // this epoch was already stopped/replaced
             asrReady = false;

@@ -30,6 +30,14 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **C1. Harden ASR frame handling to prevent malformed frames from killing transcription.**
+  Wrapped `handleAsrFrame()` in try-catch so malformed binary frames (truncated headers,
+  invalid compression, JSON parse failures) no longer throw unhandled exceptions that
+  could crash the audio pipeline. Moved `lastAsrFrameAt` to only mark the stream alive
+  after a frame actually parses successfully, not on error or before validation. Added
+  pre-ready message validation (catch malformed control frames). Fire-and-forget call
+  to `handleAsrFrame` now has `.catch()` guard. Robustness: a single bad frame from
+  the relay or network glitch no longer kills transcription. (commit `C1:`)
 - [x] **C4. Serialize summary generation to prevent out-of-order context corruption.**
   Multiple async triggers (word-count threshold, silence timer, stop-recording button)
   could call `generateSummary()` concurrently, allowing their streaming outputs and

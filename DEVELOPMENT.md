@@ -228,6 +228,19 @@ is re-queued), so the chain never breaks. This is the only place in the codebase
 we explicitly serialize async work; any other async flow that shares mutable state
 should follow this pattern.
 
+### D16. ASR frame validation — stream liveness only after successful parse
+The watchdog reconnect (D10) uses `lastAsrFrameAt` to detect whether the stream is
+alive or stalled. Initially, this was set whenever a binary frame *arrived*. Problem:
+malformed frames (truncated headers, JSON parse failures, relay glitches) could be
+received and counted as "proof the stream is alive" even though no transcript was
+generated — delaying reconnection while the user heard silence. Fix: `lastAsrFrameAt`
+is now set only after a frame **successfully parses** (`JSON.parse` succeeds and
+`processAsrResult` is called). Error frames from the ASR itself (MSG_ERROR_RESPONSE)
+are also counted as liveness proof (they indicate the service is responding) but any
+malformed binary, truncated header, or decode failure is silently caught and ignored.
+Consequence: a bad frame no longer defeats the watchdog. The try-catch around
+`handleAsrFrame` ensures malformed frames never throw unhandled exceptions.
+
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
