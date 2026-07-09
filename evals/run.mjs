@@ -353,6 +353,23 @@ check('sanitizeFilename strips forbidden chars, keeps zh, caps at 80',
   core.sanitizeFilename('预算会议: Q3/Q4 review?' + 'x'.repeat(100)),
   ('预算会议 Q3Q4 review' + 'x'.repeat(100)).slice(0, 80).trim().slice(0, 80));
 
+// ── localDateStr (B1: local, not UTC, date for Obsidian export) ────────────
+check('localDateStr formats a normal date',
+  core.localDateStr(new Date(2026, 6, 10, 15, 30)), // 2026-07-10 15:30 local
+  '2026-07-10');
+
+check('localDateStr zero-pads single-digit month/day',
+  core.localDateStr(new Date(2026, 0, 5, 9, 0)), // 2026-01-05 local
+  '2026-01-05');
+
+// Documents that LOCAL components are used, not UTC: a Date built from local
+// wall-clock time just after midnight must keep "today"'s local date even
+// though toISOString() (UTC-based) would render the previous day for any
+// timezone east of UTC (e.g. UTC+8 SGT before 08:00 local).
+check('localDateStr uses local date components near local midnight',
+  core.localDateStr(new Date(2026, 6, 10, 0, 15)), // 2026-07-10 00:15 local
+  '2026-07-10');
+
 // ── meeting.html wiring (no duplicated logic left inline) ─────────────────
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -363,6 +380,7 @@ check('meeting.html loads core.js', html.includes('<script src="core.js">'), tru
 check('meeting.html has no inline QUESTION_PATTERN', html.includes('QUESTION_PATTERN ='), false);
 check('meeting.html has no inline STOPWORDS', html.includes('STOPWORDS ='), false);
 check('meeting.html has no raw word-splitting left', /split\(\/\\s\+\/\)/.test(html), false);
+check('meeting.html Obsidian export uses localDateStr, not toISOString UTC date', html.includes('MeetingCore.localDateStr(new Date())'), true);
 
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);

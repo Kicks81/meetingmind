@@ -30,6 +30,10 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **B1. Obsidian export uses UTC date — meetings before 08:00 SGT get yesterday's date.**
+  Fixed the date calculation logic to use SGT (UTC+8) instead of UTC when naming Obsidian
+  notes, so meetings that end before 08:00 UTC (which is still today in SGT) now correctly
+  export to today's note instead of yesterday's. (commit `B1:`)
 - [x] **C1. Harden ASR frame handling to prevent malformed frames from killing transcription.**
   Wrapped `handleAsrFrame()` in try-catch so malformed binary frames (truncated headers,
   invalid compression, JSON parse failures) no longer throw unhandled exceptions that

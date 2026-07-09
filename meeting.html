@@ -2128,7 +2128,7 @@
       obsidianMeetingTitle = suggestedTitle ? sanitizeFilename(suggestedTitle) : 'Meeting Notes';
     }
 
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = MeetingCore.localDateStr(new Date());
     const timeStr = timestamp();
 
     let notePath = obsidianNotePath;

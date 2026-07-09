@@ -272,6 +272,19 @@
     return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 80);
   }
 
+  // ── Local (not UTC) date formatting (B1) ────────────────────────────────
+  // Date#toISOString() always renders the UTC date, so for users east of
+  // UTC (e.g. SGT, UTC+8) any meeting before 08:00 local gets stamped with
+  // yesterday's date in the note title/frontmatter/folder/heading. Use the
+  // Date object's local getters instead. Takes the Date as a parameter so
+  // it's testable without mocking the clock.
+  function localDateStr(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
   return {
     parseSpeakerSplit,
     dominantLanguage,
@@ -289,5 +302,6 @@
     escapeHtml,
     formatSummaryHtml,
     sanitizeFilename,
+    localDateStr,
   };
 });
