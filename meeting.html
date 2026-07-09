@@ -396,6 +396,7 @@
     <div class="panel-header">
       <span>&#127908;</span> Live Transcription
       <select class="model-select" id="systemAudioDevice" style="font-size:11px;max-width:150px;">
+        <option value="all">All sources (every device + system)</option>
         <option value="none">System audio: share picker</option>
       </select>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="refreshAudioDevices()">&#128257;</button>
@@ -678,6 +679,8 @@
   let finalizedUtteranceCount = 0;
   let interimEl = null;
   let asrReady = false; // true only while a BytePlus session is accepting audio
+  let extraStreams = [];      // additional input devices in "all sources" mode
+  let extraSourceNodes = [];
 
   const ASR_MODE = 'bigmodel_async';
   const ASR_RESOURCE_ID = 'volc.seedasr.sauc.duration';
@@ -990,7 +993,7 @@
       const devices = await navigator.mediaDevices.enumerateDevices();
       const inputs = devices.filter(d => d.kind === 'audioinput');
 
-      select.innerHTML = '<option value="none">System audio: share picker</option>';
+      select.innerHTML = '<option value="all">All sources (every device + system)</option><option value="none">System audio: share picker</option>';
       inputs.forEach((d, i) => {
         const opt = document.createElement('option');
         opt.value = d.deviceId;
@@ -1195,7 +1198,31 @@
     // *microphone* input — that permission is remembered permanently by
     // Chrome, unlike getDisplayMedia's picker, which prompts every time.
     const systemDeviceId = document.getElementById('systemAudioDevice').value;
-    if (systemDeviceId && systemDeviceId !== 'none') {
+    if (systemDeviceId === 'all') {
+      // "All sources": open EVERY audio input device (loopbacks, virtual
+      // cables, extra mics) plus system audio via the share picker — so
+      // Teams/browser/local playback are all captured regardless of which
+      // path they arrive by. Web Audio sums everything into one stream.
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      // The primary mic is already open — skip the same physical device
+      // (Chrome exposes it again as 'default'/'communications' aliases and
+      // under its own ID; groupId identifies the hardware).
+      const micGroups = new Set(mediaStream.getAudioTracks().map(t => t.getSettings().groupId));
+      for (const d of devices.filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')) {
+        try {
+          const s = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: d.deviceId } } });
+          if (s.getAudioTracks().some(t => micGroups.has(t.getSettings().groupId))) {
+            s.getTracks().forEach(t => t.stop()); // it's the mic we already have
+            continue;
+          }
+          extraStreams.push(s);
+          console.log('[all sources] capturing input:', d.label || d.deviceId);
+        } catch (err) {
+          console.warn('[all sources] could not open device:', d.label || d.deviceId, err.message);
+        }
+      }
+      systemStream = await captureSystemAudioViaSharePicker();
+    } else if (systemDeviceId && systemDeviceId !== 'none') {
       try {
         systemStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: systemDeviceId } } });
       } catch (err) {
@@ -1213,6 +1240,14 @@
     muteNode.gain.value = 0;
 
     sourceNode.connect(processorNode);
+
+    // "All sources" extra input devices — summed in alongside the mic.
+    for (const s of extraStreams) {
+      if (!s.getAudioTracks().length) continue;
+      const node = audioCtx.createMediaStreamSource(s);
+      node.connect(processorNode);
+      extraSourceNodes.push(node);
+    }
 
     if (systemStream && systemStream.getAudioTracks().length) {
       systemSourceNode = audioCtx.createMediaStreamSource(systemStream);
@@ -1317,6 +1352,10 @@
     if (processorNode) { processorNode.onaudioprocess = null; processorNode.disconnect(); processorNode = null; }
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
     if (systemSourceNode) { systemSourceNode.disconnect(); systemSourceNode = null; }
+    extraSourceNodes.forEach(n => n.disconnect());
+    extraSourceNodes = [];
+    extraStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
+    extraStreams = [];
     if (muteNode) { muteNode.disconnect(); muteNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (systemStream) { systemStream.getTracks().forEach(t => t.stop()); systemStream = null; }
