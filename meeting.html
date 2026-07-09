@@ -343,6 +343,12 @@
     animation: dots 1.2s infinite;
   }
 
+  .qa-answer.failed {
+    color: #f85149;
+    border-left-color: #f85149;
+    font-style: italic;
+  }
+
   @keyframes dots {
     0% { content: ""; }
     33% { content: "."; }
@@ -821,30 +827,44 @@
 
   // Stream response into an element
   async function streamIntoElement(el, messages, maxTokens = 512) {
-    const res = await callOpenRouter(messages, undefined, maxTokens);
-    if (!res) { el.textContent = '(API error — check your key)'; return; }
+    let res;
+    try {
+      res = await callOpenRouter(messages, undefined, maxTokens);
+    } catch (err) {
+      console.error('streamIntoElement: request failed:', err);
+      el.textContent = '(API error — check your key/connection)';
+      return null;
+    }
+    if (!res) { el.textContent = '(API error — check your key)'; return null; }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let text = '';
     el.textContent = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value);
-      for (const line of chunk.split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') break;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content || '';
-          text += delta;
-          el.textContent = text;
-          scrollToBottomIfNearBottom(el.closest('.panel-body'));
-        } catch {}
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') break;
+          try {
+            const json = JSON.parse(data);
+            const delta = json.choices?.[0]?.delta?.content || '';
+            text += delta;
+            el.textContent = text;
+            scrollToBottomIfNearBottom(el.closest('.panel-body'));
+          } catch {}
+        }
       }
+    } catch (err) {
+      // Mid-stream network drop — surface what we got so far (if anything)
+      // rather than letting the rejection propagate unhandled.
+      console.error('streamIntoElement: stream interrupted:', err);
+      if (!text) { el.textContent = '(connection lost mid-response)'; return null; }
     }
     return text;
   }
@@ -881,50 +901,62 @@
     const textEl = block.querySelector('.summary-text');
     setProcessing('Summarising...');
 
-    const messages = [
-      {
-        role: 'system',
-        content: 'You are a concise meeting assistant. Given new meeting speech, summarise what was just discussed as short bullet points. Use short, simple, plain language — no jargon, no long sentences. Each bullet is one line starting with "- ". Wrap genuinely key or repeated words/terms in **double asterisks** so they can be highlighted — only the important ones, not every line. '
-          + (SUMMARY_TEMPLATES[document.getElementById('summaryTemplate').value] || SUMMARY_TEMPLATES.general) + ' '
-          + MeetingCore.languageInstruction(newText)
-      },
-      {
-        role: 'user',
-        content: meetingContext
-          ? `Previous meeting context:\n${meetingContext}\n\nNew speech:\n${newText}\n\nSummarise the new speech in context.`
-          : `Meeting speech:\n${newText}\n\nSummarise the key points.`
-      }
-    ];
+    try {
+      const messages = [
+        {
+          role: 'system',
+          content: 'You are a concise meeting assistant. Given new meeting speech, summarise what was just discussed as short bullet points. Use short, simple, plain language — no jargon, no long sentences. Each bullet is one line starting with "- ". Wrap genuinely key or repeated words/terms in **double asterisks** so they can be highlighted — only the important ones, not every line. '
+            + (SUMMARY_TEMPLATES[document.getElementById('summaryTemplate').value] || SUMMARY_TEMPLATES.general) + ' '
+            + MeetingCore.languageInstruction(newText)
+        },
+        {
+          role: 'user',
+          content: meetingContext
+            ? `Previous meeting context:\n${meetingContext}\n\nNew speech:\n${newText}\n\nSummarise the new speech in context.`
+            : `Meeting speech:\n${newText}\n\nSummarise the key points.`
+        }
+      ];
 
-    const summary = await streamIntoElement(textEl, messages);
-    if (summary && summary.trim()) {
-      meetingContext += '\n' + summary;
-      // Uncapped, this is resent in FULL on every subsequent summary/Q&A
-      // call — after ~an hour that's tens of thousands of characters,
-      // meaning every LLM call gets progressively slower (more input
-      // tokens to process) the longer the meeting runs. Older content
-      // isn't lost — it's already preserved in the summary blocks on
-      // screen and in the Obsidian export — this only bounds the ROLLING
-      // prompt context used for continuity.
-      if (meetingContext.length > MEETING_CONTEXT_CHAR_CAP) {
-        meetingContext = meetingContext.slice(-MEETING_CONTEXT_CHAR_CAP);
+      const summary = await streamIntoElement(textEl, messages);
+      if (summary && summary.trim()) {
+        meetingContext += '\n' + summary;
+        // Uncapped, this is resent in FULL on every subsequent summary/Q&A
+        // call — after ~an hour that's tens of thousands of characters,
+        // meaning every LLM call gets progressively slower (more input
+        // tokens to process) the longer the meeting runs. Older content
+        // isn't lost — it's already preserved in the summary blocks on
+        // screen and in the Obsidian export — this only bounds the ROLLING
+        // prompt context used for continuity.
+        if (meetingContext.length > MEETING_CONTEXT_CHAR_CAP) {
+          meetingContext = meetingContext.slice(-MEETING_CONTEXT_CHAR_CAP);
+        }
+        textEl.innerHTML = formatSummaryHtml(summary);
+        // The final markdown render is taller than the streamed plain text
+        // (list markup, line spacing) — re-pin AFTER it, or the last bullets
+        // sit below the fold.
+        scrollToBottomIfNearBottom(panel);
+      } else {
+        // Empty/failed response: don't leave a blank block cluttering the
+        // panel, and don't lose the speech — put it back at the front of the
+        // queue so the next update covers it.
+        block.remove();
+        summaryCount--;
+        document.getElementById('summaryCount').textContent = summaryCount;
+        pendingText = newText + ' ' + pendingText;
+        console.warn('Summary update came back empty — removed the blank block and re-queued the text for the next update');
       }
-      textEl.innerHTML = formatSummaryHtml(summary);
-      // The final markdown render is taller than the streamed plain text
-      // (list markup, line spacing) — re-pin AFTER it, or the last bullets
-      // sit below the fold.
-      scrollToBottomIfNearBottom(panel);
-    } else {
-      // Empty/failed response: don't leave a blank block cluttering the
-      // panel, and don't lose the speech — put it back at the front of the
-      // queue so the next update covers it.
+    } catch (err) {
+      // Thrown failure (network error etc.) — never lose the batch: put it
+      // back at the front of the queue and remove the now-orphaned block.
+      console.error('generateSummary failed:', err);
       block.remove();
       summaryCount--;
       document.getElementById('summaryCount').textContent = summaryCount;
       pendingText = newText + ' ' + pendingText;
-      console.warn('Summary update came back empty — removed the blank block and re-queued the text for the next update');
+      flashStatusError('Summary failed — text re-queued');
+    } finally {
+      clearProcessing();
     }
-    clearProcessing();
   }
 
   // ── Post-meeting synthesis (G1) — the polished final note ───────────────
@@ -948,27 +980,35 @@
     const textEl = block.querySelector('.summary-text');
     setProcessing('Writing final summary...');
 
-    const template = SUMMARY_TEMPLATES[document.getElementById('summaryTemplate').value] || SUMMARY_TEMPLATES.general;
-    const messages = [
-      {
-        role: 'system',
-        content: 'The meeting just ended. Write the definitive meeting note from the running summary below. Structure it EXACTLY as these sections, each a bold heading line followed by "- " bullets (omit a section only if truly empty):\n**TL;DR** (2-3 bullets)\n**Decisions**\n**Action Items** (one bullet each: what — owner — due date if mentioned)\n**Open Questions**\nUse short plain language. Wrap key terms in **double asterisks**. '
-          + template + ' ' + MeetingCore.languageInstruction(source)
-      },
-      { role: 'user', content: `Running meeting summary:\n${source.slice(-12000)}` }
-    ];
+    try {
+      const template = SUMMARY_TEMPLATES[document.getElementById('summaryTemplate').value] || SUMMARY_TEMPLATES.general;
+      const messages = [
+        {
+          role: 'system',
+          content: 'The meeting just ended. Write the definitive meeting note from the running summary below. Structure it EXACTLY as these sections, each a bold heading line followed by "- " bullets (omit a section only if truly empty):\n**TL;DR** (2-3 bullets)\n**Decisions**\n**Action Items** (one bullet each: what — owner — due date if mentioned)\n**Open Questions**\nUse short plain language. Wrap key terms in **double asterisks**. '
+            + template + ' ' + MeetingCore.languageInstruction(source)
+        },
+        { role: 'user', content: `Running meeting summary:\n${source.slice(-12000)}` }
+      ];
 
-    const synthesis = await streamIntoElement(textEl, messages, 1200);
-    if (synthesis) {
-      textEl.innerHTML = formatSummaryHtml(synthesis);
-      scrollToBottomIfNearBottom(panel);
-      summaryCount++;
-      document.getElementById('summaryCount').textContent = summaryCount;
-    } else {
-      block.remove(); // API error — don't leave an empty purple shell
+      const synthesis = await streamIntoElement(textEl, messages, 1200);
+      if (synthesis) {
+        textEl.innerHTML = formatSummaryHtml(synthesis);
+        scrollToBottomIfNearBottom(panel);
+        summaryCount++;
+        document.getElementById('summaryCount').textContent = summaryCount;
+      } else {
+        block.remove(); // API error — don't leave an empty purple shell
+        flashStatusError('Final summary failed');
+      }
+    } catch (err) {
+      console.error('generateFinalSynthesis failed:', err);
+      block.remove();
+      flashStatusError('Final summary failed');
+    } finally {
+      clearProcessing();
+      autosave();
     }
-    clearProcessing();
-    autosave();
   }
 
   // ── Obsidian folder picker (Z2.5) ────────────────────────────────────────
@@ -1078,28 +1118,41 @@
 
     const answerEl = card.querySelector('.qa-answer');
 
-    const vaultMatches = searchVault(question);
-    const vaultContext = vaultMatches.length
-      ? `Relevant notes from your Obsidian vault:\n${vaultMatches.map(m => `### ${m.path}\n${m.excerpt}`).join('\n\n')}\n\n`
-      : '';
+    try {
+      const vaultMatches = searchVault(question);
+      const vaultContext = vaultMatches.length
+        ? `Relevant notes from your Obsidian vault:\n${vaultMatches.map(m => `### ${m.path}\n${m.excerpt}`).join('\n\n')}\n\n`
+        : '';
 
-    const messages = [
-      {
-        role: 'system',
-        content: 'You are a knowledgeable meeting assistant. A question was just asked during a meeting. Answer as 1-3 short bullet points using short, simple, plain language — no jargon, no long sentences. Each bullet starts with "- ". Wrap genuinely key terms in **double asterisks** to highlight them — only the important ones. Use the live meeting context and any relevant vault notes below — prefer the vault notes for factual or historical details they cover. ' + MeetingCore.languageInstruction(question)
-      },
-      {
-        role: 'user',
-        content: `${meetingContext ? `Meeting context so far:\n${meetingContext}\n\n` : ''}${vaultContext}Question asked: ${question}`
+      const messages = [
+        {
+          role: 'system',
+          content: 'You are a knowledgeable meeting assistant. A question was just asked during a meeting. Answer as 1-3 short bullet points using short, simple, plain language — no jargon, no long sentences. Each bullet starts with "- ". Wrap genuinely key terms in **double asterisks** to highlight them — only the important ones. Use the live meeting context and any relevant vault notes below — prefer the vault notes for factual or historical details they cover. ' + MeetingCore.languageInstruction(question)
+        },
+        {
+          role: 'user',
+          content: `${meetingContext ? `Meeting context so far:\n${meetingContext}\n\n` : ''}${vaultContext}Question asked: ${question}`
+        }
+      ];
+
+      answerEl.classList.remove('loading');
+      answerEl.textContent = '';
+      const answer = await streamIntoElement(answerEl, messages);
+      if (answer) {
+        answerEl.innerHTML = formatSummaryHtml(answer);
+        scrollToBottomIfNearBottom(panel); // re-pin after the taller final render
+      } else {
+        // streamIntoElement already wrote an inline error message into the
+        // element — just mark the card so it doesn't look like a normal answer.
+        answerEl.classList.add('failed');
       }
-    ];
-
-    answerEl.classList.remove('loading');
-    answerEl.textContent = '';
-    const answer = await streamIntoElement(answerEl, messages);
-    if (answer) {
-      answerEl.innerHTML = formatSummaryHtml(answer);
-      scrollToBottomIfNearBottom(panel); // re-pin after the taller final render
+    } catch (err) {
+      // Never leave the card stuck on "Thinking" — surface the failure.
+      console.error('answerQuestion failed:', err);
+      answerEl.classList.remove('loading');
+      answerEl.classList.add('failed');
+      answerEl.textContent = '(failed to get an answer — see console)';
+      flashStatusError('Q&A failed to answer a question');
     }
   }
 
@@ -1284,7 +1337,7 @@
         pendingText += ' ' + text;
         finalTranscript += ' ' + text;
         checkSummaryTrigger();
-        detectAndAnswerQuestions(text);
+        detectAndAnswerQuestions(text).catch(err => console.error('detectAndAnswerQuestions failed:', err));
         checkObsidianAutoSplit();
         maybeSplitSpeakers(text, segEl); // fire-and-forget — never blocks live ingestion
       }
@@ -1678,7 +1731,7 @@
       const batch = pendingText;
       pendingText = '';
       clearTimeout(summaryTimer);
-      generateSummary(batch);
+      generateSummary(batch).catch(err => console.error('generateSummary failed:', err));
     } else {
       // Also trigger after 30s of silence
       clearTimeout(summaryTimer);
@@ -1686,7 +1739,7 @@
         if (countWords(pendingText) >= 10) {
           const batch = pendingText;
           pendingText = '';
-          generateSummary(batch);
+          generateSummary(batch).catch(err => console.error('generateSummary failed:', err));
         }
       }, 30000);
     }
@@ -2006,6 +2059,19 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
 
   function clearProcessing() {
     document.getElementById('processingIndicator').classList.remove('visible');
+  }
+
+  // Brief visible error in the status line — LLM failures must be seen by
+  // the user, not just logged to the console. Restores whatever status text
+  // was showing before (e.g. "Recording") after a few seconds.
+  function flashStatusError(msg) {
+    const statusText = document.getElementById('statusText');
+    if (!statusText) { console.error(msg); return; }
+    const previous = statusText.textContent;
+    statusText.textContent = msg;
+    setTimeout(() => {
+      if (statusText.textContent === msg) statusText.textContent = previous;
+    }, 4000);
   }
 
   // ── Persist API keys / relay URL locally (this browser only) ────────────

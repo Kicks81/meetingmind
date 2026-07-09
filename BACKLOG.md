@@ -30,6 +30,15 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **C2. LLM pipeline failure paths: never lose transcript text, never stick the spinner.**
+  Enhanced error handling across all LLM call sites (rolling summary, final synthesis,
+  Q&A answers): API errors / mid-stream network drops / thrown failures are now caught,
+  never lose the input text (failed batches re-queued to pendingText, failed Q&A
+  becomes no-op), never leave the spinner stuck (try-finally clears processing state),
+  and errors are shown to the user via flashStatusError (visible in status bar, not
+  just console). New `.qa-answer.failed` CSS styling for visually distinct failed
+  answers. Wrapped fire-and-forget LLM calls with `.catch()` so failures are logged.
+  (commit `C2:`)
 - [x] **U10. Live-summary editing + investigation of the ~1hr transcription delay.**
   Added ✎ edit (contenteditable) / ✕ delete controls to every summary block
   (rolling updates + final synthesis), mirroring the transcript's existing controls.

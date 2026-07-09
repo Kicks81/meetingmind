@@ -205,7 +205,18 @@ audio faster than the relay/network can drain it?), and whether BytePlus's
 duration-based resource (`volc.seedasr.sauc.duration`) exhibits any session-length
 throttling — that would be provider-side and outside this codebase's control.
 
-## 4. Known limitations / sharp edges (as of 2026-07-07)
+### D14. LLM pipeline error resilience — never lose transcript text
+All LLM call sites (rolling summary, final synthesis, Q&A answers) wrap streaming
+calls in try-catch-finally: request failures / mid-stream network drops / JSON parse
+errors are caught, never propagated as unhandled rejections. Failed text batches are
+re-queued to `pendingText` so they're covered by the next summary update. Fire-and-
+forget calls (detectAndAnswerQuestions, generateSummary) have `.catch(err =>
+console.error(...))` guards. The spinner is always cleared in `finally` blocks, even
+on failure. Errors are shown to the user via `flashStatusError()` (visible in the
+status bar for 4s), not just logged. The philosophy: a flaky network or slow API must
+never cause data loss, a stuck spinner, or an unhandled promise rejection.
+
+## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
   the system-audio dropdown, whose permission persists.
