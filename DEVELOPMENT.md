@@ -216,6 +216,18 @@ on failure. Errors are shown to the user via `flashStatusError()` (visible in th
 status bar for 4s), not just logged. The philosophy: a flaky network or slow API must
 never cause data loss, a stuck spinner, or an unhandled promise rejection.
 
+### D15. Serialized summary generation — preventing concurrent mutations
+Multiple async triggers fire independently: the word-count threshold timer, the
+silence-timeout timer, and the stop-recording button can all call `generateSummary()`
+at overlapping times. Without serialization, concurrent calls would interleave their
+streaming output and `meetingContext`/`pendingText` mutations, corrupting meeting
+state. Solution: `summaryQueue` (a Promise chain) ensures at most one summary streams
+at a time. The public API `generateSummary(newText)` appends to the queue; the actual
+implementation `runGenerateSummary()` never throws (errors are caught and pendingText
+is re-queued), so the chain never breaks. This is the only place in the codebase where
+we explicitly serialize async work; any other async flow that shares mutable state
+should follow this pattern.
+
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

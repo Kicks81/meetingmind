@@ -30,6 +30,14 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **C4. Serialize summary generation to prevent out-of-order context corruption.**
+  Multiple async triggers (word-count threshold, silence timer, stop-recording button)
+  could call `generateSummary()` concurrently, allowing their streaming outputs and
+  `meetingContext`/`pendingText` mutations to interleave and corrupt state. Introduced
+  `summaryQueue` (a Promise chain) so at most one summary streams at a time and batches
+  are processed in order. Public API `generateSummary(newText)` queues onto the chain;
+  internal `runGenerateSummary()` does the work and never throws (catches failures and
+  re-queues pendingText), keeping the chain alive. (commit `C4:`)
 - [x] **C3. Fix ASR socket lifecycle and reconnect races.** Eliminated leaked sockets,
   fixed stop-vs-reconnect race condition (e.g., calling stop during backoff could
   kill a socket that reconnect was building), fixed double-start when isRecording

@@ -534,6 +534,10 @@
   let summaryTimer = null;
   let seenQuestions = new Set();
   let meetingContext = '';        // rolling plain-text of full meeting so far
+  // Serializes generateSummary calls so overlapping triggers (word-count +
+  // silence-timer + stop-recording) can never interleave their streaming
+  // output or their meetingContext/pendingText mutations — see C4.
+  let summaryQueue = Promise.resolve();
 
   const SUMMARY_WORD_THRESHOLD = 80;  // trigger summary every ~80 new words
   const MEETING_CONTEXT_CHAR_CAP = 6000; // bounds the rolling prompt context — see generateSummary
@@ -888,7 +892,16 @@
     training:   'This is a training / webinar. Focus on the concepts taught, concrete how-to steps, examples given, and any resources, tools, or references mentioned.',
   };
 
-  async function generateSummary(newText) {
+  // Public entry point: chains onto summaryQueue so at most one summary
+  // streams at a time and batches are processed in the order they were
+  // queued. runGenerateSummary never throws (it catches internally and
+  // re-queues pendingText on failure), so the chain is never broken.
+  function generateSummary(newText) {
+    summaryQueue = summaryQueue.then(() => runGenerateSummary(newText));
+    return summaryQueue;
+  }
+
+  async function runGenerateSummary(newText) {
     const panel = document.getElementById('summaryPanel');
 
     // Remove empty state
