@@ -233,6 +233,7 @@
 
   /* Summary */
   .summary-block {
+    position: relative;
     padding: 12px 14px;
     background: #161b22;
     border-radius: 8px;
@@ -241,6 +242,37 @@
     line-height: 1.7;
     animation: fadeIn 0.4s ease;
     flex-shrink: 0;
+  }
+
+  .block-controls {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: none;
+    gap: 2px;
+  }
+
+  .summary-block:hover .block-controls { display: flex; }
+
+  .block-btn {
+    background: none;
+    border: none;
+    color: #6e7681;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+
+  .block-btn:hover { background: #21262d; color: #c9d1d9; }
+  .block-btn.danger:hover { color: #f85149; }
+  .block-btn.active { color: #3fb950; }
+
+  .summary-text[contenteditable="true"] {
+    outline: 1px dashed #58a6ff;
+    border-radius: 4px;
+    padding: 4px;
+    cursor: text;
   }
 
   .summary-block.final-synthesis {
@@ -498,6 +530,7 @@
   let meetingContext = '';        // rolling plain-text of full meeting so far
 
   const SUMMARY_WORD_THRESHOLD = 80;  // trigger summary every ~80 new words
+  const MEETING_CONTEXT_CHAR_CAP = 6000; // bounds the rolling prompt context — see generateSummary
 
   // ── Obsidian vault index (in-memory, keyword search) ─────────────────────
   let vaultNotes = []; // { path, content }
@@ -509,26 +542,57 @@
   // a stop/export is intentional (the user may still want a re-send).
   const AUTOSAVE_KEY = 'meetingmind_autosave';
 
-  function snapshotState() {
-    return {
-      v: 1,
-      savedAt: Date.now(),
-      segments: [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')].map(el => ({
+  // Snapshotting used to re-read every element's .innerHTML/.textContent
+  // from the live DOM on EVERY 5-second tick, for the ENTIRE meeting —
+  // O(total meeting size), every time, forever. In a long meeting the vast
+  // majority of elements haven't changed since the last tick, so cache each
+  // element's snapshot fragment ON the element itself and only recompute it
+  // when something actually invalidates it (created, edited, export-flag
+  // toggled). This is what actually grows unboundedly with meeting length —
+  // see the U10 investigation notes near maybeSplitSpeakers/BACKLOG.md.
+  function snapSegment(el) {
+    if (!el.__snap) {
+      el.__snap = {
         t: el.querySelector('.transcript-time').textContent,
         x: el.querySelector('.seg-text').textContent,
         e: el.dataset.obsidianExported ? 1 : 0,
         sp: el.dataset.speaker || ''
-      })),
-      summaries: [...document.querySelectorAll('#summaryPanel .summary-block')].map(el => ({
+      };
+    }
+    return el.__snap;
+  }
+
+  function snapSummary(el) {
+    if (!el.__snap) {
+      el.__snap = {
         l: el.querySelector('.summary-label').textContent,
         h: el.querySelector('.summary-text').innerHTML,
         e: el.dataset.obsidianExported ? 1 : 0
-      })),
-      qas: [...document.querySelectorAll('#qaPanel .qa-card')].map(el => ({
+      };
+    }
+    return el.__snap;
+  }
+
+  function snapQA(el) {
+    if (!el.__snap) {
+      el.__snap = {
         q: el.querySelector('.qa-question').textContent,
         h: el.querySelector('.qa-answer').innerHTML,
         e: el.dataset.obsidianExported ? 1 : 0
-      })),
+      };
+    }
+    return el.__snap;
+  }
+
+  function invalidateSnap(el) { if (el) el.__snap = null; }
+
+  function snapshotState() {
+    return {
+      v: 1,
+      savedAt: Date.now(),
+      segments: [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')].map(snapSegment),
+      summaries: [...document.querySelectorAll('#summaryPanel .summary-block')].map(snapSummary),
+      qas: [...document.querySelectorAll('#qaPanel .qa-card')].map(snapQA),
       meetingContext, finalTranscript, pendingText,
       counters: { segmentCount, summaryCount, qaCount, totalWords },
       obsidian: { notePath: obsidianNotePath, title: obsidianMeetingTitle, chunk: obsidianChunkNumber }
@@ -574,9 +638,10 @@
     sPanel.innerHTML = '';
     for (const s of snap.summaries) {
       const el = document.createElement('div');
-      el.className = 'summary-block';
+      el.className = s.l.startsWith('FINAL SUMMARY') ? 'summary-block final-synthesis' : 'summary-block';
       el.innerHTML = `<div class="summary-label">${escapeHtml(s.l)}</div><div class="summary-text">${s.h}</div>`;
       if (s.e) el.dataset.obsidianExported = '1';
+      addSummaryBlockControls(el);
       sPanel.appendChild(el);
     }
 
@@ -625,6 +690,7 @@
     persistCorrections();
     // Retro-fix everything already on screen so the meeting reads correctly.
     for (const el of document.querySelectorAll('#transcriptPanel .seg-text')) {
+      invalidateSnap(el.closest('.transcript-segment')); // text is about to change — the cached autosave fragment for this segment is now stale
       el.textContent = MeetingCore.applyCorrections(el.textContent, corrections);
     }
   }
@@ -808,6 +874,7 @@
     const block = document.createElement('div');
     block.className = 'summary-block';
     block.innerHTML = `<div class="summary-label">Update ${summaryCount} &mdash; ${timestamp()}</div><div class="summary-text"></div>`;
+    addSummaryBlockControls(block);
     panel.appendChild(block);
     scrollToBottomIfNearBottom(panel);
 
@@ -832,6 +899,16 @@
     const summary = await streamIntoElement(textEl, messages);
     if (summary && summary.trim()) {
       meetingContext += '\n' + summary;
+      // Uncapped, this is resent in FULL on every subsequent summary/Q&A
+      // call — after ~an hour that's tens of thousands of characters,
+      // meaning every LLM call gets progressively slower (more input
+      // tokens to process) the longer the meeting runs. Older content
+      // isn't lost — it's already preserved in the summary blocks on
+      // screen and in the Obsidian export — this only bounds the ROLLING
+      // prompt context used for continuity.
+      if (meetingContext.length > MEETING_CONTEXT_CHAR_CAP) {
+        meetingContext = meetingContext.slice(-MEETING_CONTEXT_CHAR_CAP);
+      }
       textEl.innerHTML = formatSummaryHtml(summary);
       // The final markdown render is taller than the streamed plain text
       // (list markup, line spacing) — re-pin AFTER it, or the last bullets
@@ -864,6 +941,7 @@
     const block = document.createElement('div');
     block.className = 'summary-block final-synthesis';
     block.innerHTML = `<div class="summary-label">FINAL SUMMARY — ${timestamp()}</div><div class="summary-text"></div>`;
+    addSummaryBlockControls(block);
     panel.appendChild(block);
     scrollToBottomIfNearBottom(panel);
 
@@ -1513,6 +1591,50 @@
     document.getElementById('segCount').textContent = segmentCount;
   }
 
+  // ── Live summary editing (✎ edit / ✕ delete on each update) ──────────────
+  // The transcript already supports fixing/removing text; summaries didn't.
+  // Editing is plain contenteditable on the rendered block — no markdown
+  // round-trip needed, since autosave reads .innerHTML and Obsidian export
+  // reads .textContent directly off the live DOM, so an edit here is picked
+  // up by both automatically with no extra wiring.
+  function addSummaryBlockControls(block) {
+    const controls = document.createElement('div');
+    controls.className = 'block-controls';
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'block-btn';
+    editBtn.textContent = '✎';
+    editBtn.title = 'Edit this summary — click again when done';
+    editBtn.onclick = () => toggleSummaryEdit(block, editBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'block-btn danger';
+    delBtn.textContent = '✕';
+    delBtn.title = 'Delete this summary update (excluded from Obsidian export)';
+    delBtn.onclick = () => { block.remove(); autosave(); };
+
+    controls.appendChild(editBtn);
+    controls.appendChild(delBtn);
+    block.appendChild(controls);
+  }
+
+  function toggleSummaryEdit(block, btn) {
+    const textEl = block.querySelector('.summary-text');
+    const isEditing = textEl.getAttribute('contenteditable') === 'true';
+    if (isEditing) {
+      textEl.removeAttribute('contenteditable');
+      btn.textContent = '✎';
+      btn.classList.remove('active');
+      invalidateSnap(block); // text just changed — the cached autosave fragment is stale
+      autosave(); // commit the edit into the crash-safe snapshot right away
+    } else {
+      textEl.setAttribute('contenteditable', 'true');
+      textEl.focus();
+      btn.textContent = '✓';
+      btn.classList.add('active');
+    }
+  }
+
   // ── Small-talk cleanup ────────────────────────────────────────────────────
   // Batch-classifies the not-yet-exported transcript segments and deletes
   // the pure small talk (greetings, chit-chat, filler). Already-exported
@@ -1806,7 +1928,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     // Commit export state only now that the chunk actually went somewhere.
     obsidianNotePath = chunk.notePath;
     obsidianChunkNumber++;
-    chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; });
+    chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; invalidateSnap(el); });
     return true;
   }
 
@@ -1850,7 +1972,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     if (!hasContent) { alert('Nothing to send yet — the meeting has no content.'); return; }
 
     if (confirm('Everything is already marked as exported.\n\nIf the note is missing in Obsidian (e.g. the vault name was wrong during the meeting), click OK to RE-SEND the entire meeting as a fresh note.')) {
-      document.querySelectorAll('[data-obsidian-exported]').forEach(el => delete el.dataset.obsidianExported);
+      document.querySelectorAll('[data-obsidian-exported]').forEach(el => { delete el.dataset.obsidianExported; invalidateSnap(el); });
       obsidianNotePath = null;
       obsidianMeetingTitle = null;
       obsidianChunkNumber = 1;

@@ -162,6 +162,49 @@ optionally exported to a JSON file (Save/Load Config) because corporate browser
 policies sometimes wipe site data. The config file is plaintext — encrypting it is
 backlog L2. **Never hardcode keys anywhere, including tests.**
 
+### D13. Growing transcription delay over long meetings — investigation (2026-07-09)
+Users reported transcription falling further and further behind the live speech
+the longer a meeting ran (noticeable by ~1hr). Investigation (code-level, not live
+profiling — no way to reproduce a 1hr session in this environment) found two
+concrete, evidenced, growing-with-time costs and one structural vulnerability that
+lets them translate into audio delay specifically (not just UI sluggishness):
+
+1. **Unbounded `meetingContext`** (was backlog R3) — every summary/Q&A LLM call
+   sent the ENTIRE rolling context, which only ever grew. After ~1hr that's tens of
+   thousands of characters on every single call — more input tokens, strictly
+   increasing latency per call. Fixed: capped at `MEETING_CONTEXT_CHAR_CAP` (6000
+   chars, oldest dropped) right after each append in `generateSummary`. Safe to
+   truncate because `meetingContext` is only the rolling PROMPT — the actual
+   content is already preserved in the on-screen summary blocks and the Obsidian
+   export regardless.
+2. **`autosave()` re-serialized the ENTIRE meeting every 5 seconds, forever.**
+   `snapshotState()` used to call `.querySelectorAll` + read `.innerHTML`/
+   `.textContent` off EVERY transcript segment / summary block / Q&A card ever
+   created — O(total meeting size) — on every single tick, regardless of whether
+   anything had changed. This cost strictly grows with meeting length. Fixed: each
+   element caches its own snapshot fragment (`el.__snap`), computed once and
+   invalidated only at real mutation points (segment correction retro-apply,
+   Obsidian export-flag toggle in both directions, summary edit-commit). Snapshot
+   is now O(unchanged-elements-are-free) instead of O(total size) every 5s.
+
+**Not fixed here — the structural root cause**: `ScriptProcessorNode`'s audio
+callback runs on the main JS thread (this is WHY it's deprecated in favor of
+`AudioWorkletNode`, which runs on a dedicated real-time audio thread). That means
+ANY main-thread congestion — not just the two items above, but also DOM growth,
+GC pauses from ever-growing strings, LLM response streaming into the DOM — directly
+delays mic capture/encoding/sending. The two fixes above remove the two concrete,
+provably-growing contributors found in code, but the coupling itself remains.
+**AudioWorklet migration (backlog L1) is the definitive fix** and has been promoted
+above cleanliness-tier priority — it's audio-pipeline surgery, needs a dedicated
+change and a live-mic test per the guidance in D11, and was deliberately not
+attempted as a side effect of this investigation.
+
+If the delay persists (or reappears) after L1 lands, the next things to check:
+WebSocket `bufferedAmount` on `asrSocket` (backpressure — is the browser queuing
+audio faster than the relay/network can drain it?), and whether BytePlus's
+duration-based resource (`volc.seedasr.sauc.duration`) exhibits any session-length
+throttling — that would be provider-side and outside this codebase's control.
+
 ## 4. Known limitations / sharp edges (as of 2026-07-07)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

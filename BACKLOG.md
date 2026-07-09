@@ -7,10 +7,6 @@ never silently delete an item — strike it through with a reason.
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
 
 ## P1 — Data safety & reliability
-- [ ] **R3. Unbounded meetingContext.** Rolling context grows forever and is resent on
-  every summary/Q&A call — long meetings blow up cost/latency. Cap with a rolling
-  condensation (summarize-the-summaries past ~3k chars).
-
 ## P2 — Granola-parity features (the "better than Granola" gap)
 - [ ] **G2. User notes pane.** Let the user jot rough notes during the meeting; merge
   them with the transcript in the final synthesis (Granola's signature interaction).
@@ -20,12 +16,39 @@ never silently delete an item — strike it through with a reason.
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
 
 ## P3 — Engineering health
-- [ ] **L1. Replace deprecated ScriptProcessorNode with AudioWorklet.**
+- [ ] **L1. Replace deprecated ScriptProcessorNode with AudioWorklet.** PROMOTED to
+  P1-priority by the U10 investigation below — this is the structural root cause of
+  the growing transcription delay, not just a cleanliness item. ScriptProcessorNode's
+  audio callback runs on the MAIN thread, so any main-thread congestion (DOM growth,
+  autosave, GC pauses) directly delays mic capture/encoding — and that congestion
+  provably grows with meeting length. AudioWorkletNode runs on a dedicated
+  realtime-audio thread, immune to main-thread jank, and is the definitive fix.
+  Needs a dedicated change + live-mic test (audio pipeline surgery, per
+  DEVELOPMENT.md D11) — do this next.
 - [ ] **L2. Key hygiene.** Warn that Save Config writes keys in plaintext; consider
   encrypting the config export with a passphrase.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **U10. Live-summary editing + investigation of the ~1hr transcription delay.**
+  Added ✎ edit (contenteditable) / ✕ delete controls to every summary block
+  (rolling updates + final synthesis), mirroring the transcript's existing controls.
+  **Investigation**: traced the growing delay to two compounding, code-verified
+  causes, NOT a single instant bug — see DEVELOPMENT.md D13 for the full writeup:
+  (1) `meetingContext` (R3) grew unbounded and was resent in FULL on every single
+  summary/Q&A call — fixed, now capped at 6000 chars (oldest content dropped; it's
+  already preserved on-screen/in Obsidian, this only bounds the rolling PROMPT).
+  (2) autosave() re-read/re-serialized (.innerHTML/.textContent) EVERY element from
+  the ENTIRE meeting EVERY 5 seconds regardless of whether it changed — fixed via
+  a per-element snapshot cache, invalidated only at the handful of real mutation
+  points (create/edit/export-flag-toggle/correction-retro-apply). Both are real,
+  now-fixed contributors to main-thread load that grew with meeting length.
+  **Root architectural cause identified but NOT fixed here** (see promoted L1):
+  ScriptProcessorNode's audio callback runs on the main JS thread, so remaining
+  main-thread congestion still couples into audio-capture timing. Needs
+  AudioWorklet migration (L1) as the definitive fix — flagged, not attempted in
+  this change per the project's own guidance on audio-pipeline changes.
+  (commit `U10:`)
 - [x] **U9. Split mixed-speaker utterances into separate paragraphs.** BytePlus's
   streaming ASR has no confirmed speaker-diarization field, so this is a text-based
   (not voice-based) turn-splitter: for utterances ≥12 words, the LLM checks for a
