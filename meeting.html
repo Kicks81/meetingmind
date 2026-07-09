@@ -402,6 +402,7 @@
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="refreshAudioDevices()">&#128257;</button>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="manageDictionary()" title="Correction dictionary — select mis-heard text in the transcript and click ✏️ Fix to teach it the right term">&#128214; <span id="dictCount">0</span></button>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="cleanSmallTalk()" title="AI-remove small talk (greetings, chit-chat, filler) from the transcript — only segments not yet exported to Obsidian">&#129529;</button>
+      <button class="btn btn-clear" id="micToggle" style="padding:2px 8px;font-size:11px;" onclick="toggleMic()" title="Mute/unmute YOUR microphone in the transcription mix — mute it when you're only listening, so surrounding office noise isn't transcribed. Other sources (Teams/system audio) keep flowing.">&#127897;&#65039; on</button>
       <span class="panel-badge" id="segCount">0</span>
     </div>
     <div class="panel-body" id="transcriptPanel">
@@ -681,6 +682,16 @@
   let asrReady = false; // true only while a BytePlus session is accepting audio
   let extraStreams = [];      // additional input devices in "all sources" mode
   let extraSourceNodes = [];
+  let micGainNode = null;     // gates the mic into the mix (mute = gain 0)
+  let micEnabled = true;
+
+  function toggleMic() {
+    micEnabled = !micEnabled;
+    if (micGainNode) micGainNode.gain.value = micEnabled ? 1 : 0;
+    const btn = document.getElementById('micToggle');
+    btn.innerHTML = micEnabled ? '&#127897;&#65039; on' : '&#128263; muted';
+    btn.style.color = micEnabled ? '' : '#f85149';
+  }
 
   const ASR_MODE = 'bigmodel_async';
   const ASR_RESOURCE_ID = 'volc.seedasr.sauc.duration';
@@ -1239,7 +1250,13 @@
     muteNode = audioCtx.createGain();
     muteNode.gain.value = 0;
 
-    sourceNode.connect(processorNode);
+    // The mic routes through its own gain node so it can be muted live
+    // (listen-only meetings: office noise around the user would otherwise
+    // be transcribed) without touching the system-audio sources.
+    micGainNode = audioCtx.createGain();
+    micGainNode.gain.value = micEnabled ? 1 : 0;
+    sourceNode.connect(micGainNode);
+    micGainNode.connect(processorNode);
 
     // "All sources" extra input devices — summed in alongside the mic.
     for (const s of extraStreams) {
@@ -1351,6 +1368,7 @@
     asrReady = false;
     if (processorNode) { processorNode.onaudioprocess = null; processorNode.disconnect(); processorNode = null; }
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+    if (micGainNode) { micGainNode.disconnect(); micGainNode = null; }
     if (systemSourceNode) { systemSourceNode.disconnect(); systemSourceNode = null; }
     extraSourceNodes.forEach(n => n.disconnect());
     extraSourceNodes = [];
