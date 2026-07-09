@@ -1551,7 +1551,10 @@
   // ── Export to Obsidian ───────────────────────────────────────────────────
   async function suggestMeetingTitle() {
     const content = (meetingContext || finalTranscript).trim();
-    if (!document.getElementById('apiKey').value.trim() || !content) return null;
+    if (!document.getElementById('apiKey').value.trim() || !content) {
+      console.warn('Title generation skipped:', !content ? 'no meeting content yet' : 'no API key');
+      return null;
+    }
 
     const messages = [
       {
@@ -1561,13 +1564,22 @@
       { role: 'user', content: `Meeting content:\n${content.slice(0, 3000)}\n\nGenerate a short title for this meeting.` }
     ];
 
-    const scratch = document.createElement('div');
-    try {
-      const title = await streamIntoElement(scratch, messages);
-      return title?.trim() || null;
-    } catch {
-      return null;
+    // The title decides the note's filename for the whole meeting — worth a
+    // retry, and worth logging WHY it fell back instead of failing silently.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const raw = await streamIntoElement(document.createElement('div'), messages);
+        const title = raw?.trim().split('\n')[0].replace(/^["'“「]+|["'”」]+$/g, '').trim();
+        if (title && title.length >= 3) return title;
+        console.warn(`Title generation attempt ${attempt} returned empty/too short:`, JSON.stringify(raw));
+      } catch (err) {
+        console.warn(`Title generation attempt ${attempt} failed:`, err.message);
+      }
     }
+
+    // Last resort: first words of the meeting beat a generic "Meeting Notes".
+    const firstWords = content.replace(/\s+/g, ' ').slice(0, 40).trim();
+    return firstWords || null;
   }
 
   // ── Incremental Obsidian export — ONE note per meeting, grown via repeated
