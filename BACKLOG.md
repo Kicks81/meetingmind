@@ -26,6 +26,17 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **U9. Split mixed-speaker utterances into separate paragraphs.** BytePlus's
+  streaming ASR has no confirmed speaker-diarization field, so this is a text-based
+  (not voice-based) turn-splitter: for utterances ≥12 words, the LLM checks for a
+  conversational turn boundary and — only if found — splits into Speaker A / Speaker
+  B labeled segments (blue/pink badges), keeping the original timestamp on both.
+  Guarded by a length-reconstruction check so a model that summarised instead of
+  splitting is rejected outright, not guessed at. Fire-and-forget — never blocks live
+  ingestion; safe if the segment is deleted/exported before the LLM responds.
+  core.parseSpeakerSplit is pure + eval-covered (en/zh/malformed/length-mismatch).
+  Wired through autosave/restore and Obsidian export (speaker shown in the note).
+  (commit `U9:`)
 - [x] **R1. Crash-safe autosave.** Full session (transcript, summaries, Q&A, context,
   export state) snapshots to localStorage every 5s + on unload; restore offered on
   load; Clear wipes it. Verified across a real reload. (commit `R1:`)

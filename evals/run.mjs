@@ -147,6 +147,43 @@ check('mixed: latin term in a zh question still matches, ranked first',
   core.searchVault('AFO的负责人是谁？', NOTES).map(r => r.path),
   ['projects/afo.md', 'zh/预算.md']); // zh note now also matches via 负责 bigram (Z3) — AFO note must stay ranked first
 
+// ── parseSpeakerSplit (speaker-turn splitting) ─────────────────────────────
+check('speaker-split: UNCHANGED reply returns null',
+  core.parseSpeakerSplit('UNCHANGED', 'some utterance text here'),
+  null);
+
+check('speaker-split: valid two-turn split parses',
+  core.parseSpeakerSplit('SPLIT\nA: I think we should ship Friday\nB: I disagree, we need more testing', 'I think we should ship Friday I disagree, we need more testing'),
+  [{ speaker: 'A', text: 'I think we should ship Friday' }, { speaker: 'B', text: 'I disagree, we need more testing' }]);
+
+check('speaker-split: three alternating turns parses',
+  core.parseSpeakerSplit('SPLIT\nA: 预算批准了吗\nB: 批准了\nA: 太好了', '预算批准了吗批准了太好了'),
+  [{ speaker: 'A', text: '预算批准了吗' }, { speaker: 'B', text: '批准了' }, { speaker: 'A', text: '太好了' }]);
+
+check('speaker-split: single-line SPLIT (no real second turn) rejected',
+  core.parseSpeakerSplit('SPLIT\nA: just one turn here', 'just one turn here'),
+  null);
+
+check('speaker-split: malformed line invalidates the whole reply',
+  core.parseSpeakerSplit('SPLIT\nA: hello there\nsomething without a speaker prefix', 'hello there something without a speaker prefix'),
+  null);
+
+check('speaker-split: reconstructed text far shorter than original is rejected (model summarised)',
+  core.parseSpeakerSplit('SPLIT\nA: hi\nB: bye', 'a very long original utterance that goes on for quite a while about the budget and timeline'),
+  null);
+
+check('speaker-split: reconstructed text far longer than original is rejected',
+  core.parseSpeakerSplit('SPLIT\nA: hi there this is way more text than was ever said originally\nB: and even more padding text appended here too', 'hi there'),
+  null);
+
+check('speaker-split: empty/garbage reply returns null',
+  core.parseSpeakerSplit('', 'some text'),
+  null);
+
+check('speaker-split: only speaker letters A/B accepted, C rejected as malformed',
+  core.parseSpeakerSplit('SPLIT\nA: hello\nC: world', 'hello world'),
+  null);
+
 // ── dominantLanguage / languageInstruction (Z4) ────────────────────────────
 check('lang: pure zh classified zh',
   core.dominantLanguage('我们今天讨论项目预算的安排。'),

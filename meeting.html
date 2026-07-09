@@ -218,6 +218,19 @@
     margin-bottom: 4px;
   }
 
+  .seg-speaker {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .seg-speaker-A { background: rgba(88, 166, 255, 0.16); color: #58a6ff; }
+  .seg-speaker-B { background: rgba(219, 97, 162, 0.18); color: #db61a2; }
+
   /* Summary */
   .summary-block {
     padding: 12px 14px;
@@ -503,7 +516,8 @@
       segments: [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')].map(el => ({
         t: el.querySelector('.transcript-time').textContent,
         x: el.querySelector('.seg-text').textContent,
-        e: el.dataset.obsidianExported ? 1 : 0
+        e: el.dataset.obsidianExported ? 1 : 0,
+        sp: el.dataset.speaker || ''
       })),
       summaries: [...document.querySelectorAll('#summaryPanel .summary-block')].map(el => ({
         l: el.querySelector('.summary-label').textContent,
@@ -550,14 +564,9 @@
     const tPanel = document.getElementById('transcriptPanel');
     tPanel.innerHTML = '';
     for (const s of snap.segments) {
-      const el = document.createElement('div');
-      el.className = 'transcript-segment final';
-      el.innerHTML = `<div class="transcript-time">${escapeHtml(s.t)}</div><div class="seg-text">${escapeHtml(s.x)}</div>`;
+      const el = buildSegmentElement(s.x, false, s.sp || null);
+      el.querySelector('.transcript-time').textContent = s.t; // keep the original timestamp, not "now"
       if (s.e) el.dataset.obsidianExported = '1';
-      const del = document.createElement('button');
-      del.className = 'seg-delete'; del.textContent = '✕';
-      del.onclick = () => deleteSegment(el);
-      el.appendChild(del);
       tPanel.appendChild(el);
     }
 
@@ -1193,12 +1202,13 @@
         // Dictionary fix-ups run before anything downstream sees the text,
         // so summaries, Q&A, and exports all get the corrected terms.
         const text = MeetingCore.applyCorrections(u.text, corrections);
-        addFinalSegment(text);
+        const segEl = addFinalSegment(text);
         pendingText += ' ' + text;
         finalTranscript += ' ' + text;
         checkSummaryTrigger();
         detectAndAnswerQuestions(text);
         checkObsidianAutoSplit();
+        maybeSplitSpeakers(text, segEl); // fire-and-forget — never blocks live ingestion
       }
       finalizedUtteranceCount = i + 1;
     }
@@ -1423,14 +1433,20 @@
     totalWords += countWords(text);
     document.getElementById('wordCount').textContent = `${totalWords} words transcribed`;
 
-    createTranscriptSegment(text, false);
+    return createTranscriptSegment(text, false);
   }
 
-  function createTranscriptSegment(text, isInterim) {
-    const panel = document.getElementById('transcriptPanel');
+  // Builds a segment element WITHOUT inserting it — used both by
+  // createTranscriptSegment (normal path: build + append) and by the
+  // speaker-split replacement path (build several, then swap them in for
+  // one existing element via replaceWith, so nothing is briefly appended
+  // at the wrong position).
+  function buildSegmentElement(text, isInterim, speakerLabel) {
     const el = document.createElement('div');
     el.className = `transcript-segment ${isInterim ? 'interim' : 'final'}`;
-    el.innerHTML = `<div class="transcript-time">${timestamp()}</div><div class="seg-text">${escapeHtml(text)}</div>`;
+    const badge = speakerLabel ? `<span class="seg-speaker seg-speaker-${speakerLabel}">Speaker ${speakerLabel}</span>` : '';
+    el.innerHTML = `<div class="transcript-time">${timestamp()}</div>${badge}<div class="seg-text">${escapeHtml(text)}</div>`;
+    if (speakerLabel) el.dataset.speaker = speakerLabel;
     if (!isInterim) {
       const del = document.createElement('button');
       del.className = 'seg-delete';
@@ -1439,9 +1455,56 @@
       del.onclick = () => deleteSegment(el);
       el.appendChild(del);
     }
+    return el;
+  }
+
+  function createTranscriptSegment(text, isInterim, speakerLabel) {
+    const panel = document.getElementById('transcriptPanel');
+    const el = buildSegmentElement(text, isInterim, speakerLabel);
     panel.appendChild(el);
     panel.scrollTop = panel.scrollHeight;
     return el;
+  }
+
+  // ── Speaker-turn splitting (fire-and-forget, never blocks ingestion) ────
+  const SPEAKER_SPLIT_MIN_WORDS = 12; // short utterances are essentially always one speaker — skip the LLM call
+  const SPEAKER_SPLIT_PROMPT = 'You are given ONE transcribed utterance that may actually contain TWO speakers\' turns run together with no gap (common in fast back-and-forth or interruptions). '
+    + 'If you can identify a clear turn boundary, reply with EXACTLY:\nSPLIT\nA: <verbatim text of turn 1>\nB: <verbatim text of turn 2>\n(add more alternating A:/B: lines only if there are genuinely more turns)\n'
+    + 'Copy the words VERBATIM — do not rephrase, summarise, or correct grammar, only decide where to cut and label who said which part (A = first speaker, B = second, alternating back to A if it continues). '
+    + 'If there is no clear second speaker (the whole thing reads as one person talking), reply with EXACTLY: UNCHANGED';
+
+  async function maybeSplitSpeakers(text, segEl) {
+    if (!document.getElementById('apiKey').value.trim()) return;
+    if (countWords(text) < SPEAKER_SPLIT_MIN_WORDS) return;
+
+    let turns;
+    try {
+      const raw = await streamIntoElement(document.createElement('div'), [
+        { role: 'system', content: SPEAKER_SPLIT_PROMPT + ' ' + MeetingCore.languageInstruction(text) },
+        { role: 'user', content: text }
+      ]);
+      turns = MeetingCore.parseSpeakerSplit(raw, text);
+    } catch (err) {
+      console.warn('Speaker-split check failed (kept as one segment):', err.message);
+      return;
+    }
+    // No split found, or the segment was deleted/exported/edited already
+    // while we were waiting on the LLM — leave it exactly as it is.
+    if (!turns || !segEl.isConnected) return;
+
+    const time = segEl.querySelector('.transcript-time').textContent;
+    const wasExported = !!segEl.dataset.obsidianExported; // already in Obsidian — don't re-export it as "new"
+    const newEls = turns.map(t => {
+      const el = buildSegmentElement(t.text, false, t.speaker);
+      el.querySelector('.transcript-time').textContent = time; // keep the ORIGINAL utterance's time, not "now"
+      if (wasExported) el.dataset.obsidianExported = '1';
+      return el;
+    });
+
+    segEl.replaceWith(...newEls);
+    segmentCount += newEls.length - 1; // one segment became N — reflect that in the header count
+    document.getElementById('segCount').textContent = segmentCount;
+    autosave();
   }
 
   function deleteSegment(el) {
@@ -1662,7 +1725,10 @@
       notePath = `${baseFolder}/${yearMonth}/${dateStr} - ${obsidianMeetingTitle}`;
     }
 
-    const transcriptLines = transcriptEls.map(el => `**${el.querySelector('.transcript-time').textContent}** — ${el.querySelector('.seg-text').textContent}`);
+    const transcriptLines = transcriptEls.map(el => {
+      const speaker = el.dataset.speaker ? ` (Speaker ${el.dataset.speaker})` : '';
+      return `**${el.querySelector('.transcript-time').textContent}**${speaker} — ${el.querySelector('.seg-text').textContent}`;
+    });
     const summaryBlocks = summaryEls.map(el => `${el.querySelector('.summary-label').textContent}:\n${el.querySelector('.summary-text').textContent}`);
     const qaBlocks = qaEls.map(el => `**Q:** ${el.querySelector('.qa-question').textContent}\n**A:** ${el.querySelector('.qa-answer').textContent}`);
 

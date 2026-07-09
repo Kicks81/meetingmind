@@ -104,6 +104,47 @@
     });
   }
 
+  // ── Speaker-turn splitting (text-based, not audio-based) ────────────────
+  // BytePlus's streaming ASR has no confirmed speaker-diarization field —
+  // its utterances carry text/timing only. When two people speak with no
+  // silence gap between them (interruptions, quick back-and-forth, or two
+  // audio sources summed into one mono stream), BytePlus's own utterance
+  // segmentation can merge both into one text blob. This asks the LLM to
+  // find a conversational turn boundary and split it back into paragraphs
+  // labeled by speaker — inference from the words, not the voice, so it
+  // will be wrong on ambiguous exchanges. Never invoked for the common case
+  // (one utterance, one speaker) — that stays exactly as ASR produced it.
+  //
+  // Expected raw LLM reply:
+  //   "UNCHANGED"                              — no turn boundary found
+  //   "SPLIT\nA: <verbatim text>\nB: <verbatim text>\n..."
+  //
+  // Returns null (keep the single segment as-is) unless the reply parses
+  // cleanly AND the reconstructed text is close in length to the original —
+  // that guard catches a model that summarised/rewrote instead of splitting.
+  function parseSpeakerSplit(raw, originalText) {
+    if (!raw || typeof raw !== 'string') return null;
+    const lines = raw.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length || lines[0].toUpperCase() !== 'SPLIT') return null;
+
+    const turns = [];
+    for (const line of lines.slice(1)) {
+      const m = line.match(/^([AB]):\s*(.+)$/);
+      if (!m) return null; // one malformed line invalidates the whole split — never guess
+      turns.push({ speaker: m[1], text: m[2].trim() });
+    }
+    if (turns.length < 2) return null; // not actually a split
+
+    const strip = s => s.replace(/\s+/g, '');
+    const originalLen = strip(originalText).length;
+    if (!originalLen) return null;
+    const reconstructedLen = strip(turns.map(t => t.text).join('')).length;
+    const ratio = reconstructedLen / originalLen;
+    if (ratio < 0.7 || ratio > 1.3) return null; // model rewrote/summarised instead of splitting
+
+    return turns;
+  }
+
   // ── Output-language pinning (Z4) ─────────────────────────────────────────
   // Without an explicit instruction, LLMs tend to answer in English even for
   // Chinese meetings. Classify the speech's dominant script and produce the
@@ -211,6 +252,7 @@
   }
 
   return {
+    parseSpeakerSplit,
     dominantLanguage,
     languageInstruction,
     applyCorrections,
