@@ -557,6 +557,46 @@
     return { ok: true, state: to };
   }
 
+  // ── Diagnostics panel (E4) ──────────────────────────────────────────────
+  // Pure formatter: a plain state snapshot (numbers/strings/booleans only —
+  // never API keys or transcript content) -> a human-readable plaintext dump
+  // for the "Copy diagnostics" button. Missing fields render as 'n/a' rather
+  // than throwing, so a partially-populated snapshot (e.g. before recording
+  // starts) still produces a usable dump.
+  function formatDiagnosticsDump(s) {
+    s = s || {};
+    const na = (v) => (v === undefined || v === null || v === '') ? 'n/a' : v;
+    const lines = [
+      'MeetingMind diagnostics — ' + na(s.timestamp),
+      '',
+      '[ASR]',
+      `  state: ${na(s.asrState)}`,
+      `  socket readyState: ${na(s.socketReadyState)}`,
+      `  bufferedAmount: ${na(s.bufferedAmount)}`,
+      `  seconds since last ASR frame: ${na(s.secondsSinceLastFrame)}`,
+      `  reconnect count: ${na(s.reconnectCount)}`,
+      '',
+      '[Audio]',
+      `  capture mode: ${na(s.captureMode)}`,
+      `  mic track: ${na(s.micTrackState)}`,
+      `  system track: ${na(s.systemTrackState)}`,
+      `  extra tracks live/dead: ${na(s.extraTracksLive)}/${na(s.extraTracksDead)}`,
+      `  audioCtx.state: ${na(s.audioCtxState)}`,
+      '',
+      '[LLM]',
+      `  summary calls/failures: ${na(s.summaryCalls)}/${na(s.summaryFailures)}`,
+      `  question calls/failures: ${na(s.questionCalls)}/${na(s.questionFailures)}`,
+      `  action calls/failures: ${na(s.actionCalls)}/${na(s.actionFailures)}`,
+      `  summaryQueue: ${na(s.summaryQueueState)}`,
+      '',
+      '[Storage]',
+      `  last autosave: ${na(s.lastAutosaveResult)}`,
+      `  snapshot bytes / budget: ${na(s.snapshotBytes)} / ${na(s.snapshotBudget)}`,
+      `  export ledger chunks: ${na(s.exportLedgerChunks)}`,
+    ];
+    return lines.join('\n');
+  }
+
   return {
     parseSpeakerSplit,
     dominantLanguage,
@@ -598,5 +638,6 @@
     ASR_TRANSITIONS,
     isValidAsrTransition,
     nextAsrState,
+    formatDiagnosticsDump,
   };
 });

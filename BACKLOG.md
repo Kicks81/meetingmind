@@ -269,3 +269,13 @@ never silently delete an item — strike it through with a reason.
   optional (user can choose plaintext); plaintext configs remain unencrypted for backward compatibility.
   See DEVELOPMENT.md D26 for format details. This was the E3 enhancement request; moving L2 here
   as complete. (commit `E3:`)
+- [x] **E4. In-app diagnostics panel — make failures visible instead of silent.**
+  Added a Diagnostics pane (Settings button → Diagnostics tab) that displays live relay health,
+  WebSocket connection state (connecting/connected/closed), buffered bytes, frames sent/received
+  counts, relay uptime, and backpressure detection. Frame inspection shows the last N parsed frames
+  (UTC timestamp, payload size, MSG_TYPE, success/error status) for troubleshooting "why did a frame
+  fail?" questions. Connection timeline logs events (open, close, reconnect, backpressure spike) with
+  timestamps so users can correlate audio gaps to relay disconnections. Optional diagnostics export
+  (text report of full session events + frame stats) for support/debugging. ASR failures, frame decode
+  errors, and connection state changes are surfaced in the UI instead of silent console warnings. Pure
+  JS — no new dependencies. See DEVELOPMENT.md D27 for design rationale. (commit `E4:`)

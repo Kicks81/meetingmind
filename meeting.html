@@ -516,6 +516,45 @@
   }
 
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* E4: diagnostics drawer — hidden by default, floats above the main
+     layout so it never shifts panel widths/heights when toggled. */
+  .diag-drawer {
+    display: none;
+    position: fixed;
+    top: 54px;
+    right: 12px;
+    width: 420px;
+    max-width: 90vw;
+    max-height: 70vh;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    z-index: 9998;
+    flex-direction: column;
+  }
+  .diag-drawer.visible { display: flex; }
+  .diag-drawer-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid #30363d;
+    color: #c9d1d9;
+    font-size: 12px;
+  }
+  .diag-drawer-header strong { flex: 1; }
+  .diag-drawer-content {
+    margin: 0;
+    padding: 10px;
+    overflow: auto;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #8b949e;
+    white-space: pre-wrap;
+  }
 </style>
 </head>
 <body>
@@ -553,8 +592,20 @@
     <button class="btn btn-clear" onclick="document.getElementById('configFileInput').click()" title="Load keys/settings from a saved file">Load Config</button>
     <input type="file" id="configFileInput" accept="application/json" style="display:none" onchange="loadConfig(event)">
     <button class="btn btn-clear" onclick="clearAll()">Clear</button>
+    <button class="btn btn-clear" style="padding:6px 8px;" id="diagToggle" title="Diagnostics — ASR/audio/LLM/storage health, for troubleshooting" onclick="toggleDiagnostics()">&#128295;</button>
   </div>
 </header>
+
+<!-- E4: diagnostics drawer — hidden by default, no impact on main layout.
+     Polled every ~2s only while recording or while open (see startDiagInterval). -->
+<div id="diagDrawer" class="diag-drawer">
+  <div class="diag-drawer-header">
+    <strong>Diagnostics</strong>
+    <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="copyDiagnostics()">Copy diagnostics</button>
+    <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="toggleDiagnostics()">Close</button>
+  </div>
+  <pre id="diagContent" class="diag-drawer-content"></pre>
+</div>
 
 <!-- U13: silent-death protection banner — appears when a captured audio
      track ends unexpectedly (screen-share "Stop sharing", revoked mic
@@ -676,6 +727,15 @@
   // silence-timer + stop-recording) can never interleave their streaming
   // output or their meetingContext/pendingText mutations — see C4.
   let summaryQueue = Promise.resolve();
+  let summaryQueueBusy = false; // E4 diagnostics: true while a summary is actively streaming
+
+  // E4: counts only, never content — feeds the diagnostics drawer. Hooked
+  // into the existing C2 catch paths below without altering their behavior.
+  const diagCounters = {
+    summaryCalls: 0, summaryFailures: 0,
+    questionCalls: 0, questionFailures: 0,
+    actionCalls: 0, actionFailures: 0,
+  };
 
   const SUMMARY_WORD_THRESHOLD = 80;  // trigger summary every ~80 new words
   const MEETING_CONTEXT_CHAR_CAP = 6000; // bounds the rolling prompt context — see generateSummary
@@ -782,15 +842,22 @@
   }
 
   let lastAutosaveJson = '';
+  // E4 diagnostics: result of the most recent autosave attempt, plus the
+  // byte size of what was actually (attempted to be) written — counts/state
+  // only, read by the diagnostics drawer.
+  let lastAutosaveResult = 'n/a';
+  let lastAutosaveBytes = 0;
   function autosave() {
     try {
       const snap = snapshotState();
       if (!snap.segments.length && !snap.summaries.length && !snap.qas.length && !snap.actions.length) return;
       let json = JSON.stringify(snap);
+      lastAutosaveBytes = MeetingCore.lengthInUtf8Bytes(json);
       if (json === lastAutosaveJson) return; // nothing changed
       try {
         localStorage.setItem(AUTOSAVE_KEY, json);
         lastAutosaveJson = json;
+        lastAutosaveResult = 'ok';
       } catch (quotaErr) {
         if (!isQuotaError(quotaErr)) throw quotaErr;
         // Quota hit: trim the OLDEST raw transcript segments from the
@@ -805,18 +872,23 @@
         if (trimmedCount > 0) {
           trimmedSnap.trimmedSegmentCount = (snap.trimmedSegmentCount || 0) + trimmedCount;
           json = JSON.stringify(trimmedSnap);
+          lastAutosaveBytes = MeetingCore.lengthInUtf8Bytes(json);
           try {
             localStorage.setItem(AUTOSAVE_KEY, json);
             lastAutosaveJson = json;
+            lastAutosaveResult = 'trimmed';
             showAutosaveTrimWarning();
           } catch (stillFailing) {
+            lastAutosaveResult = 'failed';
             console.warn('Autosave failed even after trimming:', stillFailing.message);
           }
         } else {
+          lastAutosaveResult = 'failed';
           console.warn('Autosave quota exceeded and nothing left to trim:', quotaErr.message);
         }
       }
     } catch (err) {
+      lastAutosaveResult = 'failed';
       console.warn('Autosave failed:', err.message);
     }
   }
@@ -1011,6 +1083,8 @@
     isStartingRecording = state === 'starting';
     isRecording = state === 'recording' || state === 'reconnecting';
     asrReconnecting = state === 'reconnecting';
+    if (isRecording) ensureDiagInterval(); // E4: keep diagnostics fresh while recording, even if drawer is closed
+    else maybeStopDiagInterval();
     return true;
   }
 
@@ -1037,6 +1111,7 @@
   let micGainNode = null;     // gates the mic into the mix (mute = gain 0)
   let micEnabled = true;
   let lastAsrFrameAt = 0;     // watchdog: when BytePlus last sent us anything
+  let asrReconnectCount = 0;  // E4: total successful+attempted reconnects this session, for diagnostics
 
   // Silent-stall watchdog (distinct from the reconnect-on-close path): the
   // BytePlus session can die *logically* — frames just stop — while both
@@ -1165,11 +1240,13 @@
   }
 
   async function runGenerateSummary(newText) {
+    summaryQueueBusy = true; // E4 diagnostics
     const panel = document.getElementById('summaryPanel');
 
     // Remove empty state
     panel.querySelector('.empty-state')?.remove();
 
+    diagCounters.summaryCalls++;
     summaryCount++;
     document.getElementById('summaryCount').textContent = summaryCount;
 
@@ -1230,6 +1307,7 @@
     } catch (err) {
       // Thrown failure (network error etc.) — never lose the batch: put it
       // back at the front of the queue and remove the now-orphaned block.
+      diagCounters.summaryFailures++;
       console.error('generateSummary failed:', err);
       block.remove();
       summaryCount--;
@@ -1237,6 +1315,7 @@
       pendingText = newText + ' ' + pendingText;
       flashStatusError('Summary failed — text re-queued');
     } finally {
+      summaryQueueBusy = false; // E4 diagnostics
       clearProcessing();
     }
   }
@@ -1370,6 +1449,7 @@
     ];
 
     const scratch = document.createElement('div');
+    diagCounters.actionCalls++;
     try {
       const raw = await streamIntoElement(scratch, messages);
       for (const action of parseActionList(raw)) {
@@ -1381,6 +1461,7 @@
     } catch (err) {
       // Non-critical, silent background detection — log and move on rather
       // than surfacing a status error for every missed action item.
+      diagCounters.actionFailures++;
       console.error('detectActionItems failed:', err);
     }
   }
@@ -1448,10 +1529,12 @@
     ];
 
     const scratch = document.createElement('div');
+    diagCounters.questionCalls++;
     try {
       const verdict = await streamIntoElement(scratch, messages);
       return verdict?.trim().toUpperCase().startsWith('YES');
     } catch {
+      diagCounters.questionFailures++;
       return true; // fail open on error rather than silently dropping a real question
     }
   }
@@ -1473,6 +1556,7 @@
 
     const answerEl = card.querySelector('.qa-answer');
 
+    diagCounters.questionCalls++;
     try {
       const vaultMatches = searchVault(question);
       const vaultContext = vaultMatches.length
@@ -1503,6 +1587,7 @@
       }
     } catch (err) {
       // Never leave the card stuck on "Thinking" — surface the failure.
+      diagCounters.questionFailures++;
       console.error('answerQuestion failed:', err);
       answerEl.classList.remove('loading');
       answerEl.classList.add('failed');
@@ -1948,6 +2033,7 @@
     for (let attempt = 0; isRecording && epoch === asrEpoch; attempt++) {
       const delay = delays[Math.min(attempt, delays.length - 1)];
       document.getElementById('statusText').textContent = `Reconnecting ASR (attempt ${attempt + 1})...`;
+      asrReconnectCount++; // E4 diagnostics
       await new Promise(r => setTimeout(r, delay));
       if (!isRecording || epoch !== asrEpoch) break;
       try {
@@ -2695,6 +2781,75 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       obsidianChunkNumber = 1;
       await sendAllObsidianChunks();
     }
+  }
+
+  // ── Diagnostics drawer (E4) ─────────────────────────────────────────────
+  // Hidden by default, zero cost when closed and not recording: a single 2s
+  // interval that only does work while the drawer is open OR a meeting is
+  // recording (so the counters stay fresh for a "why did it freeze" report
+  // taken right after the fact). No per-frame/per-token hooks here — only
+  // counters already incremented at their call sites above.
+  let diagInterval = null;
+  let diagOpen = false;
+
+  function currentDiagState() {
+    return {
+      timestamp: new Date().toISOString(),
+      asrState: asrState.value,
+      socketReadyState: asrSocket ? asrSocket.readyState : 'null',
+      bufferedAmount: asrSocket ? asrSocket.bufferedAmount : 'n/a',
+      secondsSinceLastFrame: lastAsrFrameAt ? Math.round((Date.now() - lastAsrFrameAt) / 1000) : 'n/a',
+      reconnectCount: asrReconnectCount,
+      captureMode: usingWorklet ? 'worklet' : 'fallback (ScriptProcessorNode)',
+      micTrackState: mediaStream ? (micTrackDead ? 'dead' : 'live') : 'n/a',
+      systemTrackState: systemStream ? (systemTrackDead ? 'dead' : 'live') : 'n/a',
+      extraTracksLive: extraStreams.filter(e => !e.dead).length,
+      extraTracksDead: extraStreams.filter(e => e.dead).length,
+      audioCtxState: audioCtx ? audioCtx.state : 'n/a',
+      summaryCalls: diagCounters.summaryCalls,
+      summaryFailures: diagCounters.summaryFailures,
+      questionCalls: diagCounters.questionCalls,
+      questionFailures: diagCounters.questionFailures,
+      actionCalls: diagCounters.actionCalls,
+      actionFailures: diagCounters.actionFailures,
+      summaryQueueState: summaryQueueBusy ? 'busy' : 'idle',
+      lastAutosaveResult: lastAutosaveResult,
+      snapshotBytes: lastAutosaveBytes,
+      snapshotBudget: AUTOSAVE_BYTE_BUDGET,
+      exportLedgerChunks: exportLedger.length,
+    };
+  }
+
+  function renderDiagnostics() {
+    document.getElementById('diagContent').textContent = MeetingCore.formatDiagnosticsDump(currentDiagState());
+  }
+
+  function maybeStopDiagInterval() {
+    if (diagOpen || isRecording) return; // still needed
+    if (diagInterval) { clearInterval(diagInterval); diagInterval = null; }
+  }
+
+  function ensureDiagInterval() {
+    if (diagInterval) return;
+    renderDiagnostics(); // paint immediately, don't wait 2s
+    diagInterval = setInterval(() => {
+      if (!diagOpen && !isRecording) { maybeStopDiagInterval(); return; }
+      renderDiagnostics();
+    }, 2000);
+  }
+
+  function toggleDiagnostics() {
+    diagOpen = !diagOpen;
+    document.getElementById('diagDrawer').classList.toggle('visible', diagOpen);
+    if (diagOpen) { ensureDiagInterval(); } else { maybeStopDiagInterval(); }
+  }
+
+  function copyDiagnostics() {
+    const dump = MeetingCore.formatDiagnosticsDump(currentDiagState());
+    navigator.clipboard?.writeText(dump).then(
+      () => flashStatusError('Diagnostics copied to clipboard'),
+      () => console.warn('Copy diagnostics: clipboard write failed')
+    );
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

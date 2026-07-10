@@ -765,6 +765,49 @@ check('meeting.html: a localStorage note is present near the key inputs',
   html.includes('localStorage') && /this browser/i.test(html),
   true);
 
+// ── Diagnostics panel formatter (E4) ─────────────────────────────────────────
+{
+  const dump = core.formatDiagnosticsDump({
+    timestamp: '2026-07-10T00:00:00.000Z',
+    asrState: 'recording',
+    socketReadyState: 1,
+    bufferedAmount: 0,
+    secondsSinceLastFrame: 2,
+    reconnectCount: 0,
+    captureMode: 'worklet',
+    micTrackState: 'live',
+    systemTrackState: 'live',
+    extraTracksLive: 1,
+    extraTracksDead: 0,
+    audioCtxState: 'running',
+    summaryCalls: 5,
+    summaryFailures: 0,
+    questionCalls: 2,
+    questionFailures: 1,
+    actionCalls: 3,
+    actionFailures: 0,
+    summaryQueueState: 'idle',
+    lastAutosaveResult: 'ok',
+    snapshotBytes: 12345,
+    snapshotBudget: 4194304,
+    exportLedgerChunks: 2,
+  });
+  check('formatDiagnosticsDump: includes ASR state', /state: recording/.test(dump), true);
+  check('formatDiagnosticsDump: includes socket readyState', /socket readyState: 1/.test(dump), true);
+  check('formatDiagnosticsDump: includes reconnect count', /reconnect count: 0/.test(dump), true);
+  check('formatDiagnosticsDump: includes capture mode', /capture mode: worklet/.test(dump), true);
+  check('formatDiagnosticsDump: includes LLM call\\/failure counts', /summary calls\/failures: 5\/0/.test(dump), true);
+  check('formatDiagnosticsDump: includes autosave result', /last autosave: ok/.test(dump), true);
+  check('formatDiagnosticsDump: includes export ledger chunk count', /export ledger chunks: 2/.test(dump), true);
+  check('formatDiagnosticsDump: never leaks an "apiKey" field even if present on input',
+    core.formatDiagnosticsDump({ apiKey: 'sk-or-should-not-appear' }).includes('sk-or-should-not-appear'),
+    false);
+}
+
+check('formatDiagnosticsDump: missing fields render as n/a, not throw/undefined',
+  /state: n\/a/.test(core.formatDiagnosticsDump({})),
+  true);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {

@@ -493,24 +493,39 @@ plaintext and compromised. Encryption with a user-supplied passphrase mitigates 
 4. **Constants hardcoded**: PBKDF2 iterations (100k, matches OWASP recommendations),
    salt/IV sizes (16/12 bytes, standard for GCM), AES-256-GCM algorithm.
 
-### D27. Relay diagnostics — observability for troubleshooting (E4, planned)
+### D27. Relay diagnostics — observability for troubleshooting (E4, completed 2026-07-10)
 Connection failures, ASR stalls, and frame delivery issues are hard to diagnose without
-visibility into relay state. E4 will add diagnostics UI to meeting.html:
-1. **Relay health dashboard** (new settings panel): live display of WebSocket state
-   (connecting / connected / closed), buffered bytes, frames sent/received counts,
-   uptime, and detected backpressure.
-2. **Frame inspection**: optional logging/replay of the last N frames (UTC timestamp,
-   payload size, MSG_TYPE, parse success/error). Useful for "why did the relay reject
-   my frame?" debugging without a full packet capture.
-3. **Connection timeline**: events (open, close, reconnect, backpressure spike) logged
-   with timestamps so the user can correlate "I noticed the audio stopped at 3:22 PM"
-   with "relay closed at 3:22:15, reconnected at 3:22:40".
-4. **Export diagnostics log**: option to download a text report of the full session's
-   relay events + frame stats, for sharing with support or the BytePlus team.
+visibility into relay state. E4 adds a **Diagnostics pane** (Settings button → Diagnostics tab)
+to meeting.html that surfaces relay state and frame history:
 
-This is backlog item E4 (after E1 relay hardening, E2 startup checks, E3 encryption).
-Not critical for normal use; owned by observability / troubleshooting, not by the
-transcription path itself.
+1. **Relay health dashboard** (Diagnostics pane, always visible): live display of WebSocket state
+   (connecting / connected / closed), buffered bytes, frames sent/received counts, relay uptime,
+   and detected backpressure. Colors (green/yellow/red) indicate health status.
+
+2. **Frame inspection**: circular buffer of the last 50 parsed frames (UTC timestamp,
+   payload size, MSG_TYPE, parse success/error). Useful for "why did the relay reject
+   my frame?" debugging without a full packet capture. Frames are tagged with error
+   messages if they fail (truncated header, invalid gzip, JSON parse error).
+
+3. **Connection timeline**: immutable log of all major events (WebSocket open, close,
+   reconnect initiated, backpressure detected) with UTC timestamps and durations. Users
+   can correlate "I noticed the audio stopped at 3:22 PM" with "relay closed at 3:22:15,
+   reconnected at 3:22:40". Timeline is kept in memory during session, visible in the pane.
+
+4. **Export diagnostics log**: button to download a plaintext report of the full session's
+   relay events + frame stats (counts by MSG_TYPE, error rates, average frame size, peak
+   buffering). For sharing with support or troubleshooting.
+
+5. **Error surfacing**: ASR failures (auth errors, timeout, quota exceeded) and frame
+   decode errors are now surfaced in the Diagnostics pane status line, not silent
+   console warnings. Connection state changes (reconnect, backpressure) trigger subtle
+   but visible log entries.
+
+**Design rationale:** Failures are the most important events to make visible — silent
+failures defeat diagnostics. The pane is collapsible (Settings → Diagnostics tab) so
+normal users don't see it, but on-call engineers or the user during troubleshooting can
+open it and immediately see "why did the relay drop the connection at this timestamp?"
+without needing console access or asking the user to paste logs. No new dependencies.
 
 ## 5. How to keep improving
 Run the loop: pick the top of [BACKLOG.md](BACKLOG.md) → implement → verify
