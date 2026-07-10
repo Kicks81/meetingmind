@@ -933,6 +933,27 @@
   // (e.g. the user hit Stop while a reconnect was mid-flight) instead of
   // resurrecting a socket for a session that no longer exists.
   let asrEpoch = 0;
+
+  // Single source of truth for the connection lifecycle (S1). The transition
+  // table itself lives in core.js (pure, eval-tested); this wrapper applies
+  // it to the live state and derives the legacy booleans below so every
+  // existing call site (isRecording, isStartingRecording, asrReconnecting)
+  // keeps working unchanged.
+  const asrState = { value: 'idle' };
+  function setAsrState(next) {
+    const { ok, state } = MeetingCore.nextAsrState(asrState.value, next);
+    if (!ok) {
+      console.warn(`ASR state: rejected illegal transition ${asrState.value} -> ${next}`);
+      return false;
+    }
+    console.log(`ASR state: ${asrState.value} -> ${state}`);
+    asrState.value = state;
+    isStartingRecording = state === 'starting';
+    isRecording = state === 'recording' || state === 'reconnecting';
+    asrReconnecting = state === 'reconnecting';
+    return true;
+  }
+
   let audioCtx = null;
   let mediaStream = null;
   let systemStream = null;
@@ -1852,7 +1873,7 @@
   async function scheduleAsrReconnect(apiKey, relayUrl, epoch) {
     if (asrReconnecting) return;
     if (epoch !== asrEpoch) return; // stale reconnect request from an already-stopped session
-    asrReconnecting = true;
+    if (!setAsrState('reconnecting')) return; // not in 'recording' — nothing legal to do
     const delays = [1000, 2000, 4000, 8000, 15000];
     for (let attempt = 0; isRecording && epoch === asrEpoch; attempt++) {
       const delay = delays[Math.min(attempt, delays.length - 1)];
@@ -1862,6 +1883,7 @@
       try {
         await openAsrSession(apiKey, relayUrl);
         if (epoch !== asrEpoch) break; // stopped while connecting; openAsrSession already discarded it
+        setAsrState('recording');
         document.getElementById('statusText').textContent = 'Recording';
         console.log('ASR reconnected after', attempt + 1, 'attempt(s)');
         break;
@@ -1870,7 +1892,10 @@
       }
     }
     if (!isRecording && epoch === asrEpoch) document.getElementById('statusText').textContent = 'Stopped';
-    asrReconnecting = false;
+    // Note: if the loop exhausted without success and stop() already ran
+    // concurrently, the state has already moved to 'stopping'/'idle' via
+    // that path (which also clears the derived asrReconnecting flag) — no
+    // further transition is needed here.
   }
 
   async function stopRecognition() {
@@ -2107,7 +2132,7 @@
       const key = document.getElementById('apiKey').value.trim();
       if (!key) { alert('Please enter your OpenRouter API key first.'); return; }
 
-      isStartingRecording = true;
+      setAsrState('starting');
       document.getElementById('statusText').textContent = 'Connecting...';
       try {
         await startRecognition();
@@ -2116,19 +2141,19 @@
         alert(err.message);
         document.getElementById('statusText').textContent = 'Ready';
         await stopRecognition();
-        isStartingRecording = false;
+        setAsrState('idle');
         return;
       }
-      isStartingRecording = false;
 
-      isRecording = true;
+      setAsrState('recording');
       document.getElementById('recordBtn').textContent = 'Stop Meeting';
       document.getElementById('recordBtn').classList.add('recording');
       document.getElementById('statusDot').classList.add('active');
       document.getElementById('statusText').textContent = 'Recording';
     } else {
-      isRecording = false;
+      setAsrState('stopping');
       await stopRecognition();
+      setAsrState('idle');
       clearTimeout(summaryTimer);
       document.getElementById('recordBtn').textContent = 'Start Meeting';
       document.getElementById('recordBtn').classList.remove('recording');

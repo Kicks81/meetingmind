@@ -492,6 +492,33 @@
     }
   }
 
+  // ── ASR connection lifecycle state machine (S1) ─────────────────────────
+  // Consolidates the previously-scattered isRecording/asrReady/asrReconnecting
+  // bookkeeping into one explicit state field with a validated transition
+  // table. Pure and side-effect free — meeting.html owns the actual mutable
+  // state and derives its legacy booleans from it; this module only decides
+  // whether a requested transition is legal.
+  const ASR_STATES = ['idle', 'starting', 'recording', 'reconnecting', 'stopping'];
+  const ASR_TRANSITIONS = {
+    idle: ['starting'],
+    starting: ['recording', 'idle'],
+    recording: ['stopping', 'reconnecting'],
+    reconnecting: ['recording', 'stopping'],
+    stopping: ['idle'],
+  };
+
+  function isValidAsrTransition(from, to) {
+    return !!(ASR_TRANSITIONS[from] && ASR_TRANSITIONS[from].includes(to));
+  }
+
+  // Returns { ok, state }: the resulting state and whether the requested
+  // transition was accepted. Illegal transitions are rejected (state left
+  // unchanged) — never throws; the caller decides how to log the rejection.
+  function nextAsrState(from, to) {
+    if (!isValidAsrTransition(from, to)) return { ok: false, state: from };
+    return { ok: true, state: to };
+  }
+
   return {
     parseSpeakerSplit,
     dominantLanguage,
@@ -525,5 +552,9 @@
     ASR_COMP_GZIP,
     buildAsrFrame,
     parseAsrFrame,
+    ASR_STATES,
+    ASR_TRANSITIONS,
+    isValidAsrTransition,
+    nextAsrState,
   };
 });

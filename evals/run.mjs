@@ -643,6 +643,59 @@ function concatBytes(...arrs) {
 check('meeting.html buildFrame delegates to MeetingCore.buildAsrFrame', html.includes('MeetingCore.buildAsrFrame'), true);
 check('meeting.html handleAsrFrame delegates to MeetingCore.parseAsrFrame', html.includes('MeetingCore.parseAsrFrame'), true);
 
+// ── ASR connection state machine (S1) ───────────────────────────────────────
+// Every legal transition in the lifecycle idle→starting→recording→
+// {stopping,reconnecting}→... must be accepted, and every illegal one
+// (including self-loops and skipping states) must be rejected without
+// throwing and without mutating the state.
+{
+  const legal = [
+    ['idle', 'starting'],
+    ['starting', 'recording'],
+    ['starting', 'idle'],       // startRecognition() threw before going live
+    ['recording', 'stopping'],
+    ['recording', 'reconnecting'],
+    ['reconnecting', 'recording'],
+    ['reconnecting', 'stopping'],
+    ['stopping', 'idle'],
+  ];
+  for (const [from, to] of legal) {
+    check(`ASR transition legal: ${from} -> ${to}`, core.isValidAsrTransition(from, to), true);
+    const result = core.nextAsrState(from, to);
+    check(`ASR nextAsrState accepts ${from} -> ${to}`, result, { ok: true, state: to });
+  }
+
+  const illegal = [
+    ['idle', 'recording'],       // can't skip 'starting'
+    ['idle', 'reconnecting'],
+    ['idle', 'stopping'],
+    ['idle', 'idle'],            // self-loop
+    ['starting', 'starting'],
+    ['starting', 'reconnecting'],
+    ['starting', 'stopping'],
+    ['recording', 'recording'],
+    ['recording', 'idle'],       // must go through 'stopping'
+    ['recording', 'starting'],
+    ['reconnecting', 'reconnecting'],
+    ['reconnecting', 'idle'],    // must go through 'stopping'
+    ['reconnecting', 'starting'],
+    ['stopping', 'stopping'],
+    ['stopping', 'recording'],
+    ['stopping', 'reconnecting'],
+    ['stopping', 'starting'],
+  ];
+  for (const [from, to] of illegal) {
+    check(`ASR transition illegal: ${from} -> ${to}`, core.isValidAsrTransition(from, to), false);
+    const result = core.nextAsrState(from, to);
+    check(`ASR nextAsrState rejects ${from} -> ${to} (state unchanged)`, result, { ok: false, state: from });
+  }
+}
+
+// meeting.html consolidates the lifecycle into one explicit state object
+// with a single transition function, rather than scattered booleans (S1).
+check('meeting.html has a single ASR lifecycle state object', html.includes("const asrState = { value: 'idle' }"), true);
+check('meeting.html transitions go through setAsrState, which validates via core.js', html.includes('MeetingCore.nextAsrState(asrState.value, next)'), true);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {

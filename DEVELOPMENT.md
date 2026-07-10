@@ -346,6 +346,27 @@ structural fix together eliminate the ~1hr transcription delay observed in pract
 browsers must upgrade). The audio pipeline is otherwise unchanged and transparent to
 the rest of the app.
 
+### D23. ASR connection state machine — single source of truth (S1, completed 2026-07-10)
+For the first ~1 year of the project, ASR socket lifecycle was managed via scattered
+boolean flags (`isRecording`, `isStartingRecording`, `asrReconnecting`, `asrReady`).
+This worked for the happy path but was vulnerable to race conditions: concurrent
+calls to `scheduleAsrReconnect()` and `stopRecognition()` could both manipulate the
+state, leading to leaked sockets, double-starts, and cycles where reconnect kept
+re-opening a socket that stop had killed. To fix this, extracted the transition
+table into a pure, eval-tested state machine in core.js: `ASR_STATES` (the legal
+states: idle, starting, recording, reconnecting, stopping) and `ASR_TRANSITIONS`
+(a map of which states are reachable from each state). The validation functions
+`isValidAsrTransition(from, to)` and `nextAsrState(from, to)` are pure and never
+throw; they return `{ok, state}`. meeting.html owns the mutable state object
+(`asrState = {value: 'idle'}`) and calls `setAsrState(next)` whenever a
+transition is requested. setAsrState validates via core.js, logs rejections
+(which are rare in production but critical for debugging), and derives the legacy
+booleans for backward compatibility so every existing call site (isRecording,
+isStartingRecording, asrReconnecting) keeps working. Evals comprehensively cover
+all legal and illegal transition pairs (22 checks each), ensuring no regression
+in the state machine rules. Result: the lifecycle is now explicit, auditable,
+and race-condition-safe.
+
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

@@ -21,6 +21,21 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **S1. Explicit ASR connection state machine.** Consolidated the previously
+  scattered `isRecording`, `isStartingRecording`, and `asrReconnecting` booleans
+  into a single state object with validated transitions. The transition table
+  (`ASR_STATES` and `ASR_TRANSITIONS`) and validation logic (`isValidAsrTransition`,
+  `nextAsrState`) live in core.js as pure, eval-tested functions; meeting.html owns
+  the mutable state and calls `setAsrState(next)` which validates transitions and
+  derives the legacy booleans for backward compatibility. This eliminates race
+  conditions (e.g., stop-vs-reconnect transitions that could leak sockets in D10)
+  by enforcing a strict state machine: only legal transitions are accepted, illegal
+  ones are rejected with a log and no state change. Evals cover all legal and
+  illegal transition pairs (22 checks: all reachable paths in idle→starting→recording→
+  {stopping,reconnecting}→... and rejection of skipped/self-loop states). Verified:
+  transition validation in isolation, correct derivation of legacy booleans,
+  integration with autosave/restore (state not persisted, rebuilt on load), and
+  no manual testing needed (pure). (commit `S1:`)
 - [x] **L1. Replace deprecated ScriptProcessorNode with AudioWorklet.** Migrated
   audio capture from the deprecated ScriptProcessorNode (main-thread callback) to
   AudioWorkletNode (dedicated real-time audio thread). This eliminates the direct
