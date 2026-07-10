@@ -11,7 +11,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-netstat -ano | findstr /r /c:"[:.]8765[^0-9]" >nul 2>nul
+rem Only a LISTENING socket on 8765 is a real conflict — TIME_WAIT remnants
+rem from a previous session linger for ~2 minutes and must not block startup.
+netstat -ano | findstr "LISTENING" | findstr /r /c:"[:.]8765[^0-9]" >nul 2>nul
 if not errorlevel 1 (
     echo.
     echo Port 8765 is already in use - the relay may already be running.
@@ -37,17 +39,15 @@ start "MeetingMind Relay" cmd /k node relay.js
 
 rem Poll the relay's HTTP endpoint (~10s max) instead of a blind sleep,
 rem so we only open Chrome once the relay is actually accepting requests.
+rem ONE PowerShell invocation with an internal retry loop. Spawning
+rem PowerShell repeatedly is very slow on corporate machines (each launch
+rem gets scanned by endpoint security), curl.exe can be blocked outright by
+rem policy, and Invoke-WebRequest can hang on a corporate proxy — so use a
+rem raw TCP connect to 127.0.0.1 (the relay's bind address): no proxy, no
+rem curl, a single process for the whole ~15s poll window.
 set RELAY_UP=0
-for /l %%i in (1,1,20) do (
-    if "!RELAY_UP!"=="0" (
-        powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8765/' -UseBasicParsing -TimeoutSec 1; exit 0 } catch { exit 1 }" >nul 2>nul
-        if not errorlevel 1 (
-            set RELAY_UP=1
-        ) else (
-            timeout /t 1 /nobreak >nul
-        )
-    )
-)
+powershell -NoProfile -Command "$ok=$false; for($i=0; $i -lt 15 -and -not $ok; $i++){ try { $c = New-Object Net.Sockets.TcpClient; $t = $c.BeginConnect('127.0.0.1', 8765, $null, $null); if ($t.AsyncWaitHandle.WaitOne(1000) -and $c.Connected) { $ok = $true } $c.Close() } catch {} if (-not $ok) { Start-Sleep -Seconds 1 } }; if ($ok) { exit 0 } else { exit 1 }"
+if not errorlevel 1 set RELAY_UP=1
 
 if "%RELAY_UP%"=="0" (
     echo.
