@@ -317,6 +317,57 @@
     };
   }
 
+  // ── Autosave restore hardening (D2) ─────────────────────────────────────
+  // Snapshot schema versions this build understands. v1 predates the
+  // sanitize-on-restore fix; v1 snapshots are still accepted (migrated) but
+  // get sanitizeStoredHtml applied same as v2. Bump this when the shape of
+  // snapshotState()'s output changes in a way that would break restore.
+  const KNOWN_SNAPSHOT_VERSIONS = [1, 2];
+
+  // Checks the snapshot is a plausible, restorable shape BEFORE any DOM is
+  // touched — restoreFromAutosave must never clear panels and then throw
+  // partway through destructuring fields off a malformed/corrupt snapshot.
+  // Deliberately conservative: only checks presence/type of the fields
+  // restoreFromAutosave actually reads, not a full deep schema.
+  function validateAutosaveSnapshot(snap) {
+    if (!snap || typeof snap !== 'object') return false;
+    if (!KNOWN_SNAPSHOT_VERSIONS.includes(snap.v)) return false;
+    if (!Array.isArray(snap.segments)) return false;
+    if (!Array.isArray(snap.summaries)) return false;
+    if (!Array.isArray(snap.qas)) return false;
+    if (snap.actions !== undefined && !Array.isArray(snap.actions)) return false;
+    if (!snap.counters || typeof snap.counters !== 'object') return false;
+    if (!snap.obsidian || typeof snap.obsidian !== 'object') return false;
+    return true;
+  }
+
+  // Sanitizes HTML fragments captured from summary/Q&A innerHTML before they
+  // are re-injected into the page on restore. Scope: this defends the
+  // stored-HTML ROUND TRIP (content this same app generated and saved to
+  // localStorage) against corruption/tampering of that localStorage entry —
+  // it is NOT a general-purpose HTML sanitizer for arbitrary hostile input.
+  // Regex/string-based on purpose (no-deps constraint): strips
+  // script/style/iframe/object/embed elements (open+content+close, and
+  // self-closing forms), all on*="..." event-handler attributes, and
+  // javascript: URLs in href/src attributes. Plain text (including CJK)
+  // passes through unchanged.
+  function sanitizeStoredHtml(html) {
+    if (typeof html !== 'string') return '';
+    let out = html;
+    // Dangerous elements: drop the whole element including its content.
+    out = out.replace(/<(script|style|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
+    // Self-closing / unclosed forms of the same tags.
+    out = out.replace(/<(script|style|iframe|object|embed)\b[^>]*\/?>/gi, '');
+    // on* event-handler attributes (onclick="...", onerror='...', onload=...).
+    out = out.replace(/\son\w+\s*=\s*"(?:[^"\\]|\\.)*"/gi, '');
+    out = out.replace(/\son\w+\s*=\s*'(?:[^'\\]|\\.)*'/gi, '');
+    out = out.replace(/\son\w+\s*=\s*[^\s>]+/gi, '');
+    // javascript: URLs in href/src attributes.
+    out = out.replace(/(\s(?:href|src)\s*=\s*)"(?:\s|&#x?0*9;|&#x?0*[aA];)*javascript:[^"]*"/gi, '$1"#"');
+    out = out.replace(/(\s(?:href|src)\s*=\s*)'(?:\s|&#x?0*9;|&#x?0*[aA];)*javascript:[^']*'/gi, "$1'#'");
+    return out;
+  }
+
   // ── Rendering helpers ────────────────────────────────────────────────────
   function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -381,5 +432,7 @@
     lengthInUtf8Bytes,
     trimSegmentsToByteBudget,
     trimSnapshotToByteBudget,
+    validateAutosaveSnapshot,
+    sanitizeStoredHtml,
   };
 });

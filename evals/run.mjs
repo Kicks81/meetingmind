@@ -460,6 +460,75 @@ check('trimSegmentsToByteBudget: budget of 0 with content still keeps the last s
     true);
 }
 
+// ── Autosave restore hardening (D2) ─────────────────────────────────────────
+{
+  const baseSnap = {
+    v: 2, savedAt: Date.now(),
+    segments: [], summaries: [], qas: [], actions: [],
+    counters: { segmentCount: 0, summaryCount: 0, qaCount: 0, totalWords: 0, actionCount: 0 },
+    obsidian: { notePath: null, title: null, chunk: 1 },
+  };
+
+  check('validateAutosaveSnapshot: valid v2 snapshot accepted', core.validateAutosaveSnapshot(baseSnap), true);
+  check('validateAutosaveSnapshot: valid v1 snapshot accepted (migration path)',
+    core.validateAutosaveSnapshot(Object.assign({}, baseSnap, { v: 1 })), true);
+  check('validateAutosaveSnapshot: unknown schema version rejected',
+    core.validateAutosaveSnapshot(Object.assign({}, baseSnap, { v: 3 })), false);
+  check('validateAutosaveSnapshot: missing v rejected', core.validateAutosaveSnapshot(Object.assign({}, baseSnap, { v: undefined })), false);
+  check('validateAutosaveSnapshot: null snapshot rejected', core.validateAutosaveSnapshot(null), false);
+  check('validateAutosaveSnapshot: non-object snapshot rejected', core.validateAutosaveSnapshot('not json'), false);
+  check('validateAutosaveSnapshot: missing segments array rejected',
+    core.validateAutosaveSnapshot(Object.assign({}, baseSnap, { segments: undefined })), false);
+  check('validateAutosaveSnapshot: missing counters rejected',
+    core.validateAutosaveSnapshot(Object.assign({}, baseSnap, { counters: undefined })), false);
+  check('validateAutosaveSnapshot: missing obsidian rejected',
+    core.validateAutosaveSnapshot(Object.assign({}, baseSnap, { obsidian: undefined })), false);
+  check('validateAutosaveSnapshot: actions field omitted entirely is still fine (defaults to [] at restore)',
+    core.validateAutosaveSnapshot(Object.assign({}, baseSnap, { actions: undefined })), true);
+}
+
+check('sanitizeStoredHtml: plain en text passes through unchanged',
+  core.sanitizeStoredHtml('<p>Ship the release by <mark>Friday</mark>.</p>'),
+  '<p>Ship the release by <mark>Friday</mark>.</p>');
+
+check('sanitizeStoredHtml: plain zh text passes through unchanged',
+  core.sanitizeStoredHtml('<p>下周<mark>五</mark>前发布。</p>'),
+  '<p>下周<mark>五</mark>前发布。</p>');
+
+check('sanitizeStoredHtml: mixed zh-en text passes through unchanged',
+  core.sanitizeStoredHtml('<p>关于<mark>AFO integration</mark>，谁负责？</p>'),
+  '<p>关于<mark>AFO integration</mark>，谁负责？</p>');
+
+check('sanitizeStoredHtml: strips <script>...</script> block',
+  core.sanitizeStoredHtml('<p>hi</p><script>alert(1)</script>'),
+  '<p>hi</p>');
+
+check('sanitizeStoredHtml: strips self-closing <script src=...>',
+  core.sanitizeStoredHtml('<p>hi</p><script src="evil.js"></script>'),
+  '<p>hi</p>');
+
+check('sanitizeStoredHtml: strips <style>...</style> block',
+  core.sanitizeStoredHtml('<style>body{display:none}</style><p>hi</p>'),
+  '<p>hi</p>');
+
+check('sanitizeStoredHtml: strips <iframe>', core.sanitizeStoredHtml('<iframe src="x"></iframe><p>ok</p>'), '<p>ok</p>');
+check('sanitizeStoredHtml: strips <object>', core.sanitizeStoredHtml('<object data="x"></object><p>ok</p>'), '<p>ok</p>');
+check('sanitizeStoredHtml: strips <embed>', core.sanitizeStoredHtml('<embed src="x"><p>ok</p>'), '<p>ok</p>');
+
+check('sanitizeStoredHtml: strips onerror= handler off an <img>',
+  core.sanitizeStoredHtml('<img src="x" onerror="alert(1)">'),
+  '<img src="x">');
+
+check('sanitizeStoredHtml: strips onclick= handler (single-quoted)',
+  core.sanitizeStoredHtml("<div onclick='alert(1)'>hi</div>"),
+  '<div>hi</div>');
+
+check('sanitizeStoredHtml: neutralizes javascript: href',
+  core.sanitizeStoredHtml('<a href="javascript:alert(1)">click</a>'),
+  '<a href="#">click</a>');
+
+check('sanitizeStoredHtml: non-string input returns empty string', core.sanitizeStoredHtml(null), '');
+
 // ── meeting.html wiring (no duplicated logic left inline) ─────────────────
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -472,6 +541,9 @@ check('meeting.html has no inline STOPWORDS', html.includes('STOPWORDS ='), fals
 check('meeting.html has no raw word-splitting left', /split\(\/\\s\+\/\)/.test(html), false);
 check('meeting.html Obsidian export uses localDateStr, not toISOString UTC date', html.includes('MeetingCore.localDateStr(new Date())'), true);
 check('meeting.html autosave quota-recovery uses trimSnapshotToByteBudget (accounts for the finalTranscript duplicate, not just segments)', html.includes('MeetingCore.trimSnapshotToByteBudget'), true);
+check('meeting.html restore validates the snapshot before touching the page', html.includes('MeetingCore.validateAutosaveSnapshot'), true);
+check('meeting.html restore sanitizes stored summary/Q&A HTML before re-injection', html.includes('MeetingCore.sanitizeStoredHtml'), true);
+check('meeting.html snapshotState writes schema v2', /v:\s*2,/.test(html), true);
 
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);

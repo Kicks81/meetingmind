@@ -685,7 +685,7 @@
 
   function snapshotState() {
     return {
-      v: 1,
+      v: 2,
       savedAt: Date.now(),
       segments: [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')].map(snapSegment),
       summaries: [...document.querySelectorAll('#summaryPanel .summary-block')].map(snapSummary),
@@ -769,7 +769,11 @@
   function restoreFromAutosave() {
     let snap;
     try { snap = JSON.parse(localStorage.getItem(AUTOSAVE_KEY)); } catch {}
-    if (!snap || !snap.segments) return false;
+    if (!snap) return false;
+    if (!MeetingCore.validateAutosaveSnapshot(snap)) {
+      console.warn('Autosave restore skipped: snapshot failed validation (missing/invalid fields or unknown schema version)', snap && snap.v);
+      return false; // page is untouched — nothing has been cleared yet
+    }
 
     const age = Math.round((Date.now() - snap.savedAt) / 60000);
     const trimmedNote = snap.trimmedSegmentCount ? `\n\nNote: ${snap.trimmedSegmentCount} earlier transcript segment(s) were trimmed by autosave to stay under the browser storage limit — summaries/Q&A/actions are unaffected.` : '';
@@ -798,7 +802,7 @@
     for (const s of snap.summaries) {
       const el = document.createElement('div');
       el.className = s.l.startsWith('FINAL SUMMARY') ? 'summary-block final-synthesis' : 'summary-block';
-      el.innerHTML = `<div class="summary-label">${escapeHtml(s.l)}</div><div class="summary-text">${s.h}</div>`;
+      el.innerHTML = `<div class="summary-label">${escapeHtml(s.l)}</div><div class="summary-text">${MeetingCore.sanitizeStoredHtml(s.h)}</div>`;
       if (s.e) el.dataset.obsidianExported = '1';
       addSummaryBlockControls(el);
       sPanel.appendChild(el);
@@ -809,7 +813,7 @@
     for (const s of snap.qas) {
       const el = document.createElement('div');
       el.className = 'qa-card';
-      el.innerHTML = `<div class="qa-question">${escapeHtml(s.q)}</div><div class="qa-answer">${s.h}</div>`;
+      el.innerHTML = `<div class="qa-question">${escapeHtml(s.q)}</div><div class="qa-answer">${MeetingCore.sanitizeStoredHtml(s.h)}</div>`;
       if (s.e) el.dataset.obsidianExported = '1';
       qPanel.appendChild(el);
       seenQuestions.add(MeetingCore.questionKey(s.q));
