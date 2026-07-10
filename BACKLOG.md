@@ -30,6 +30,21 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **D1. Autosave quota safety — long meetings must stay crash-safe.**
+  localStorage has a ~5MB quota; long meetings' autosave snapshots can exceed it,
+  causing silent write failures and data loss. Implemented two-layer trimming:
+  `trimSegmentsToByteBudget()` (pure, eval-covered) trims oldest transcript
+  segments from an array until byte size fits; `trimSnapshotToByteBudget()`
+  applies this to the entire snapshot, rebuilding `finalTranscript` from the
+  kept segments (the duplicate was defeating per-segment trims). meeting.html
+  catches `QuotaExceededError`, applies the whole-snapshot trim, and shows a
+  user-visible warning ("Autosave is trimming old transcript…") with a 15s
+  timeout + close button. Restored sessions show a marker ("— N segment(s)
+  trimmed by autosave") in the transcript panel; summaries/Q&A/actions are
+  never trimmed, only the raw transcript. Byte budget is 4MB (leaving 1MB
+  headroom under the quota for corrections + browser overhead). Tested:
+  `lengthInUtf8Bytes` with ASCII/CJK, `trimSegmentsToByteBudget` with empty/en/zh/mixed/oversized,
+  `trimSnapshotToByteBudget` end-to-end ensuring finalTranscript sync. (commit `D1:`)
 - [x] **B1. Obsidian export uses UTC date — meetings before 08:00 SGT get yesterday's date.**
   Fixed the date calculation logic to use SGT (UTC+8) instead of UTC when naming Obsidian
   notes, so meetings that end before 08:00 UTC (which is still today in SGT) now correctly

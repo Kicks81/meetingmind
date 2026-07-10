@@ -370,6 +370,96 @@ check('localDateStr uses local date components near local midnight',
   core.localDateStr(new Date(2026, 6, 10, 0, 15)), // 2026-07-10 00:15 local
   '2026-07-10');
 
+// ── trimSegmentsToByteBudget (D1: autosave quota safety) ───────────────────
+check('lengthInUtf8Bytes: ASCII is 1 byte/char',
+  core.lengthInUtf8Bytes('hello'), 5);
+
+check('lengthInUtf8Bytes: CJK chars are multi-byte in UTF-8',
+  core.lengthInUtf8Bytes('你好'), 6); // 2 chars * 3 bytes each in UTF-8
+
+check('trimSegmentsToByteBudget: empty input',
+  core.trimSegmentsToByteBudget([], 100), { kept: [], trimmedCount: 0 });
+
+check('trimSegmentsToByteBudget: en fits entirely under budget → nothing trimmed',
+  core.trimSegmentsToByteBudget(['one', 'two', 'three'], 1000),
+  { kept: ['one', 'two', 'three'], trimmedCount: 0 });
+
+check('trimSegmentsToByteBudget: en drops oldest first, keeps newest tail',
+  core.trimSegmentsToByteBudget(['aaaaa', 'bbbbb', 'ccccc', 'ddddd'], 12),
+  { kept: ['ccccc', 'ddddd'], trimmedCount: 2 });
+
+check('trimSegmentsToByteBudget: zh — budget counted in UTF-8 bytes, not chars',
+  // each segment is 3 CJK chars = 9 bytes in UTF-8; budget 18 → keep last 2 (18 bytes), drop older
+  core.trimSegmentsToByteBudget(['你好世', '早上好', '再见了', '谢谢你'], 18),
+  { kept: ['再见了', '谢谢你'], trimmedCount: 2 });
+
+check('trimSegmentsToByteBudget: mixed zh-en segments respect byte (not char) budget',
+  // '讨论AFO项目'=15 bytes, '预算是多少'=15 bytes, 'final decision made'=20 bytes (ASCII)
+  core.trimSegmentsToByteBudget(['讨论AFO项目', '预算是多少', 'final decision made'], 40),
+  { kept: ['预算是多少', 'final decision made'], trimmedCount: 1 });
+
+check('trimSegmentsToByteBudget: a single oversized segment is kept whole, never truncated mid-segment',
+  core.trimSegmentsToByteBudget(['short', 'this one segment alone exceeds the tiny budget'], 5),
+  { kept: ['this one segment alone exceeds the tiny budget'], trimmedCount: 1 });
+
+check('trimSegmentsToByteBudget: budget of 0 with content still keeps the last segment (never empties transcript entirely)',
+  core.trimSegmentsToByteBudget(['a', 'b', 'c'], 0),
+  { kept: ['c'], trimmedCount: 2 });
+
+// ── trimSnapshotToByteBudget (D1 auditor rejection: finalTranscript is an
+// untrimmed duplicate of the segment text, so trimming segments alone never
+// actually shrinks the snapshot enough — this exercises the whole-snapshot
+// wiring, not just the pure per-segment trim) ───────────────────────────────
+{
+  const mkSeg = (i, x) => ({ t: `00:${String(i).padStart(2, '0')}`, x, e: 0, sp: '' });
+  const zhText = '我们需要讨论一下这个项目的预算和进度安排，这个非常重要';
+  const enText = 'We need to discuss the budget and timeline for this project in more detail';
+  const mixedText = '关于AFO project的budget，谁来负责跟进这个issue和下一步计划';
+  const segments = [];
+  for (let i = 0; i < 60; i++) {
+    const x = i % 3 === 0 ? zhText : i % 3 === 1 ? enText : mixedText;
+    segments.push(mkSeg(i, x));
+  }
+  // finalTranscript, as meeting.html builds it (`finalTranscript += ' ' + text`),
+  // duplicates every segment's text into one big parallel string.
+  const finalTranscript = segments.map(s => s.x).join(' ');
+  const snap = {
+    v: 1, savedAt: Date.now(),
+    segments,
+    summaries: [{ l: 'Summary', h: '<p>Summary text</p>', e: 0 }],
+    qas: [],
+    actions: [],
+    dismissedActions: [],
+    trimmedSegmentCount: 0,
+    meetingContext: '', finalTranscript, pendingText: '',
+    counters: { segmentCount: 60, summaryCount: 1, qaCount: 0, totalWords: 500, actionCount: 0 },
+    obsidian: { notePath: '', title: '', chunk: 1 }
+  };
+
+  const fullBytes = core.lengthInUtf8Bytes(JSON.stringify(snap));
+  const BUDGET = Math.floor(fullBytes / 4); // force a genuinely oversized snapshot
+
+  const { snapshot: trimmed, trimmedCount } = core.trimSnapshotToByteBudget(snap, BUDGET);
+  const trimmedBytes = core.lengthInUtf8Bytes(JSON.stringify(trimmed));
+
+  check('trimSnapshotToByteBudget: zh/en/mixed oversized snapshot — segments are actually trimmed',
+    trimmedCount > 0, true);
+
+  check('trimSnapshotToByteBudget: trimmed snapshot fits the byte budget (finalTranscript duplicate no longer defeats the trim)',
+    trimmedBytes <= BUDGET, true);
+
+  check('trimSnapshotToByteBudget: finalTranscript is rebuilt from ONLY the kept segments (no stale duplicate)',
+    trimmed.finalTranscript, trimmed.segments.map(s => s.x).join(' '));
+
+  check('trimSnapshotToByteBudget: summaries/Q&A/actions/meetingContext untouched by trimming',
+    { summaries: trimmed.summaries, qas: trimmed.qas, actions: trimmed.actions, meetingContext: trimmed.meetingContext },
+    { summaries: snap.summaries, qas: snap.qas, actions: snap.actions, meetingContext: snap.meetingContext });
+
+  check('trimSnapshotToByteBudget: newest segment always kept even under a very tight budget',
+    trimmed.segments.length > 0 && trimmed.segments[trimmed.segments.length - 1].x === segments[segments.length - 1].x,
+    true);
+}
+
 // ── meeting.html wiring (no duplicated logic left inline) ─────────────────
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -381,6 +471,7 @@ check('meeting.html has no inline QUESTION_PATTERN', html.includes('QUESTION_PAT
 check('meeting.html has no inline STOPWORDS', html.includes('STOPWORDS ='), false);
 check('meeting.html has no raw word-splitting left', /split\(\/\\s\+\/\)/.test(html), false);
 check('meeting.html Obsidian export uses localDateStr, not toISOString UTC date', html.includes('MeetingCore.localDateStr(new Date())'), true);
+check('meeting.html autosave quota-recovery uses trimSnapshotToByteBudget (accounts for the finalTranscript duplicate, not just segments)', html.includes('MeetingCore.trimSnapshotToByteBudget'), true);
 
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);

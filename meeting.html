@@ -692,10 +692,31 @@
       qas: [...document.querySelectorAll('#qaPanel .qa-card')].map(snapQA),
       actions: [...document.querySelectorAll('#actionPanel .action-card')].map(snapAction),
       dismissedActions: [...dismissedActions],
+      trimmedSegmentCount: 0, // set by autosave() if quota trimming kicks in
       meetingContext, finalTranscript, pendingText,
       counters: { segmentCount, summaryCount, qaCount, totalWords, actionCount },
       obsidian: { notePath: obsidianNotePath, title: obsidianMeetingTitle, chunk: obsidianChunkNumber }
     };
+  }
+
+  // Byte budget for the whole snapshot, leaving headroom under the ~5MB
+  // localStorage quota for the CORRECTIONS_KEY and browser/quota overhead.
+  const AUTOSAVE_BYTE_BUDGET = 4 * 1024 * 1024;
+  let autosaveTrimWarningShown = false;
+
+  function showAutosaveTrimWarning() {
+    if (autosaveTrimWarningShown) return;
+    autosaveTrimWarningShown = true;
+    const bar = document.createElement('div');
+    bar.textContent = 'Autosave is trimming old transcript to stay under browser storage limits — consider exporting soon.';
+    bar.style.cssText = 'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:9999;background:#7a5b00;color:#fff;padding:10px 16px;border-radius:6px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.3);max-width:90vw;text-align:center;';
+    const closeBtn = document.createElement('span');
+    closeBtn.textContent = ' ✕';
+    closeBtn.style.cssText = 'cursor:pointer;margin-left:10px;opacity:.8;';
+    closeBtn.onclick = () => bar.remove();
+    bar.appendChild(closeBtn);
+    document.body.appendChild(bar);
+    setTimeout(() => bar.remove(), 15000);
   }
 
   let lastAutosaveJson = '';
@@ -703,14 +724,45 @@
     try {
       const snap = snapshotState();
       if (!snap.segments.length && !snap.summaries.length && !snap.qas.length && !snap.actions.length) return;
-      const json = JSON.stringify(snap);
+      let json = JSON.stringify(snap);
       if (json === lastAutosaveJson) return; // nothing changed
-      lastAutosaveJson = json;
-      localStorage.setItem(AUTOSAVE_KEY, json);
+      try {
+        localStorage.setItem(AUTOSAVE_KEY, json);
+        lastAutosaveJson = json;
+      } catch (quotaErr) {
+        if (!isQuotaError(quotaErr)) throw quotaErr;
+        // Quota hit: trim the OLDEST raw transcript segments from the
+        // SNAPSHOT ONLY (never the live DOM) until it fits, keeping
+        // summaries/Q&A/actions/most-recent transcript intact. finalTranscript
+        // is an untrimmed duplicate of the same segment text (it accumulates
+        // in parallel — see the `finalTranscript +=` assignment below), so a
+        // segments-only trim can't shrink the snapshot enough on its own;
+        // trimSnapshotToByteBudget rebuilds finalTranscript from the kept
+        // segments too. See D1 auditor rejection notes.
+        const { snapshot: trimmedSnap, trimmedCount } = MeetingCore.trimSnapshotToByteBudget(snap, AUTOSAVE_BYTE_BUDGET);
+        if (trimmedCount > 0) {
+          trimmedSnap.trimmedSegmentCount = (snap.trimmedSegmentCount || 0) + trimmedCount;
+          json = JSON.stringify(trimmedSnap);
+          try {
+            localStorage.setItem(AUTOSAVE_KEY, json);
+            lastAutosaveJson = json;
+            showAutosaveTrimWarning();
+          } catch (stillFailing) {
+            console.warn('Autosave failed even after trimming:', stillFailing.message);
+          }
+        } else {
+          console.warn('Autosave quota exceeded and nothing left to trim:', quotaErr.message);
+        }
+      }
     } catch (err) {
       console.warn('Autosave failed:', err.message);
     }
   }
+
+  function isQuotaError(err) {
+    return err && (err.name === 'QuotaExceededError' || err.code === 22 || err.code === 1014);
+  }
+
   setInterval(autosave, 5000);
   window.addEventListener('beforeunload', autosave);
 
@@ -720,12 +772,20 @@
     if (!snap || !snap.segments) return false;
 
     const age = Math.round((Date.now() - snap.savedAt) / 60000);
-    if (!confirm(`Found an unsaved meeting from ${age < 60 ? age + ' min' : Math.round(age / 60) + ' h'} ago (${snap.segments.length} segments, ${snap.summaries.length} summaries).\n\nRestore it?`)) {
+    const trimmedNote = snap.trimmedSegmentCount ? `\n\nNote: ${snap.trimmedSegmentCount} earlier transcript segment(s) were trimmed by autosave to stay under the browser storage limit — summaries/Q&A/actions are unaffected.` : '';
+    if (!confirm(`Found an unsaved meeting from ${age < 60 ? age + ' min' : Math.round(age / 60) + ' h'} ago (${snap.segments.length} segments, ${snap.summaries.length} summaries).${trimmedNote}\n\nRestore it?`)) {
       return false; // kept in storage — user can still restore after a reload
     }
 
     const tPanel = document.getElementById('transcriptPanel');
     tPanel.innerHTML = '';
+    if (snap.trimmedSegmentCount) {
+      const marker = document.createElement('div');
+      marker.className = 'transcript-segment';
+      marker.style.cssText = 'opacity:.6;font-style:italic;padding:6px 10px;';
+      marker.textContent = `— ${snap.trimmedSegmentCount} earlier segment(s) trimmed by autosave (storage limit) —`;
+      tPanel.appendChild(marker);
+    }
     for (const s of snap.segments) {
       const el = buildSegmentElement(s.x, false, s.sp || null);
       el.querySelector('.transcript-time').textContent = s.t; // keep the original timestamp, not "now"

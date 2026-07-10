@@ -205,6 +205,31 @@ audio faster than the relay/network can drain it?), and whether BytePlus's
 duration-based resource (`volc.seedasr.sauc.duration`) exhibits any session-length
 throttling — that would be provider-side and outside this codebase's control.
 
+### D18. Autosave quota safety — byte-budget trimming (2026-07-10)
+localStorage has a ~5MB quota. Long meetings' autosave snapshots can exceed it,
+causing silent write failures (`QuotaExceededError`) and data loss — the meeting
+would restore with missing transcript. Solution: measure in **UTF-8 bytes**
+(TextEncoder available in both Node and browsers), not JS string length
+(which counts UTF-16 code units and is wrong for CJK). Two functions:
+1. `trimSegmentsToByteBudget(segments, budget)` — pure function, drops oldest
+   segments until the tail fits the byte budget. A single oversized segment is
+   never truncated (always kept whole).
+2. `trimSnapshotToByteBudget(snap, budget)` — applies trimming to the entire
+   snapshot and **rebuilds `finalTranscript` from the kept segments**. Reason:
+   `finalTranscript` is an untrimmed running duplicate of the same segment text
+   (see meeting.html `finalTranscript += ' ' + text`); trimming segments alone
+   never shrinks the snapshot enough because the duplicate defeats the trim.
+   This was caught in auditor rejection notes and is why both per-segment and
+   whole-snapshot functions exist.
+Byte budget set to 4MB in meeting.html (leaving 1MB headroom for corrections +
+browser overhead under the ~5MB quota). When trimming is necessary, the user sees
+a warning banner ("Autosave is trimming old transcript…", 15s + close button).
+Restored sessions show a marker in the transcript panel indicating trimmed
+segment count; summaries/Q&A/actions/meetingContext are untouched (only raw
+transcript is trimmed). Evals: `lengthInUtf8Bytes` (ASCII/CJK), `trimSegmentsToByteBudget`
+(empty/en/zh/mixed/oversized input), `trimSnapshotToByteBudget` (end-to-end,
+verifies finalTranscript is rebuilt correctly and other snapshot fields untouched).
+
 ### D17. Q&A panel split layout and action-item dismissal (2026-07-10)
 The Q&A panel is split into two independently-scrolling halves (top: Q&A,
 bottom: Action Required) so long meetings don't starve the action list at the

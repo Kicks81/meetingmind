@@ -242,6 +242,81 @@
     return [...folders].filter(Boolean).sort();
   }
 
+  // ── Autosave quota safety (D1) ───────────────────────────────────────────
+  // localStorage has a ~5MB quota; a long meeting's snapshot can exceed it.
+  // Trim the OLDEST transcript segments (never summaries/Q&A/actions) until
+  // the remaining tail fits the byte budget. CJK characters are multi-byte
+  // in UTF-8, so the budget must be measured in bytes, not JS string length
+  // (.length counts UTF-16 code units) — use TextEncoder, available in both
+  // Node and browsers.
+  function lengthInUtf8Bytes(str) {
+    return new TextEncoder().encode(str).length;
+  }
+
+  // segments: array of segment strings (oldest first), in the same order
+  // they'd be serialised. Returns { kept, trimmedCount } where `kept` is the
+  // longest possible tail (oldest-first order preserved) whose total UTF-8
+  // byte size is <= byteBudget, and `trimmedCount` is how many oldest
+  // segments were dropped to get there. A single segment larger than the
+  // whole budget is still kept (never truncated mid-segment) so restore
+  // never sees a corrupted/partial transcript line.
+  function trimSegmentsToByteBudget(segments, byteBudget) {
+    if (!segments || !segments.length) return { kept: [], trimmedCount: 0 };
+    let total = 0;
+    let startIdx = segments.length;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const size = lengthInUtf8Bytes(segments[i]);
+      if (total + size > byteBudget && startIdx !== segments.length) break;
+      total += size;
+      startIdx = i;
+    }
+    return { kept: segments.slice(startIdx), trimmedCount: startIdx };
+  }
+
+  // Trimming segments alone is not enough: the autosave snapshot ALSO stores
+  // finalTranscript, an untrimmed running duplicate of the exact same
+  // transcript text (see meeting.html — finalTranscript accumulates every
+  // final segment's text in parallel with the segments array). If we trim
+  // segments but leave finalTranscript untouched, the snapshot still doesn't
+  // fit (the duplicate text alone can be ~half the snapshot), and the retry
+  // write fails again silently. This whole-snapshot version:
+  //   1. computes the byte cost of everything EXCEPT segments/finalTranscript
+  //      (summaries, Q&A, actions, counters, etc.) — the "base" cost,
+  //   2. drops the oldest segments (as trimSegmentsToByteBudget does) until
+  //      segments + their duplicated text fit in the remaining budget,
+  //   3. rebuilds finalTranscript from ONLY the kept segments, so the
+  //      duplicate can never outlive the trim.
+  // `snap.segments` here is the array of already-snapshotted segment objects
+  // ({t,x,e,sp} — see snapSegment in meeting.html), oldest first.
+  function trimSnapshotToByteBudget(snap, byteBudget) {
+    const segments = snap.segments || [];
+    const restNoSegments = Object.assign({}, snap, { segments: [], finalTranscript: '' });
+    const baseBytes = lengthInUtf8Bytes(JSON.stringify(restNoSegments));
+    const available = Math.max(0, byteBudget - baseBytes);
+
+    let total = 0;
+    let startIdx = segments.length;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i];
+      const segJsonBytes = lengthInUtf8Bytes(JSON.stringify(seg));
+      // finalTranscript will store this segment's text again (plus a join
+      // space), so budget for both copies together.
+      const textBytes = lengthInUtf8Bytes((seg && seg.x) || '') + 1;
+      const size = segJsonBytes + textBytes;
+      if (total + size > available && startIdx !== segments.length) break;
+      total += size;
+      startIdx = i;
+    }
+    const kept = segments.slice(startIdx);
+    const trimmedCount = startIdx;
+    const finalTranscript = kept.map(s => (s && s.x) || '').join(' ');
+
+    return {
+      snapshot: Object.assign({}, snap, { segments: kept, finalTranscript }),
+      trimmedCount
+    };
+  }
+
   // ── Rendering helpers ────────────────────────────────────────────────────
   function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -303,5 +378,8 @@
     formatSummaryHtml,
     sanitizeFilename,
     localDateStr,
+    lengthInUtf8Bytes,
+    trimSegmentsToByteBudget,
+    trimSnapshotToByteBudget,
   };
 });
