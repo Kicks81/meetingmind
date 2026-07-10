@@ -428,6 +428,32 @@ Also implemented:
 3. **Useful logging**: Request counts (frames in/out), relay uptime, frame sizes (min/max/avg),
    and error rates. These are emitted to stdout for live debugging without code changes.
 
+### D25b. start.bat preflight checks — bootstrap reliability (E2, completed 2026-07-10)
+The startup batch script now performs three sequential checks before opening Chrome:
+1. **Node.js presence**: `where node` to ensure Node is on PATH. If missing, error and
+   exit with instructions to install from nodejs.org.
+2. **Port 8765 availability**: `netstat -ano | findstr` to detect if port 8765 is already
+   bound (stale relay window or conflicting service). If in use, error and tell the user
+   to close the stale relay. This prevents silent failures where the browser connects to
+   the wrong relay instance.
+3. **Relay health**: After starting the relay, poll its HTTP endpoint with `Invoke-WebRequest`
+   (via PowerShell) up to ~10s, only opening Chrome once it responds 200 OK. This replaces
+   a blind `timeout /t 2` sleep with actual verification, so the user never opens the app
+   only to find a broken relay (e.g., a binding error, missing `ws` package, misconfigured env).
+
+**Why important**: Startup failures are the first impression; users run `start.bat` and
+expect to see Chrome + a working relay within seconds. Silent failures (Chrome opens but
+relay crashed) are confusing and look like app bugs. Explicit checks + clear errors make
+the user self-service: "Port in use? Close the other relay window. Node missing? Install
+from nodejs.org." No support burden.
+
+**Design notes**:
+- Checks are sequential: if Node is missing, there's no point checking port or relay.
+- Relay port is hardcoded (8765); in future, if dynamic port allocation is added
+  (backlog item), this logic will change to read the port from relay startup output.
+- The HTTP poll uses PowerShell (available in Windows 11 by default) instead of a batch
+  command for a proper timeout and error handling.
+
 ### D26. Config export encryption with user-supplied passphrase (E3, completed 2026-07-10)
 Save Config now offers optional encryption of the exported JSON file. **Why this matters:**
 Keys (BytePlus, OpenRouter) are persisted in localStorage, and users can export this config

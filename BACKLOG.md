@@ -252,6 +252,15 @@ never silently delete an item — strike it through with a reason.
   to detect when browser audio frames are queueing faster than the relay can drain them (early warning
   for network/ASR slowness), and improved logging with request/response counts, relay uptime, and frame
   sizes. See DEVELOPMENT.md D25 for architectural rationale. (commit `E1:`)
+- [x] **E2. start.bat preflight — node present, port free, relay actually up.**
+  Before opening Chrome, preflight checks verify (1) Node.js is installed on PATH,
+  (2) port 8765 is available (not in use by another relay or app), and (3) the relay
+  successfully binds and responds on http://localhost:8765/. Batch script polls the
+  relay's HTTP endpoint (up to ~10s) instead of a blind sleep, so Chrome only launches
+  once the relay is actually accepting requests. If any check fails, reports a clear
+  error and pauses; if port 8765 is in use, tells the user to close the stale relay
+  window. This prevents the user from opening the app only to find a broken relay,
+  and makes port conflicts explicit and recoverable. (commit `E2:`)
 - [x] **L2. Key hygiene — config export encryption with user-supplied passphrase.**
   Save Config now optionally encrypts the exported JSON with a user-supplied passphrase using
   `crypto.subtle.encrypt` (AES-GCM), producing a self-contained encrypted artifact with embedded
