@@ -545,6 +545,104 @@ check('meeting.html restore validates the snapshot before touching the page', ht
 check('meeting.html restore sanitizes stored summary/Q&A HTML before re-injection', html.includes('MeetingCore.sanitizeStoredHtml'), true);
 check('meeting.html snapshotState writes schema v2', /v:\s*2,/.test(html), true);
 
+// ── BytePlus ASR frame build/parse (F1) ────────────────────────────────────
+// Byte-level protocol fixtures, gzip-free — parseAsrFrame only needs to hand
+// back the raw payload bytes + metadata; gunzip is the caller's job.
+function u32be(n) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n, false);
+  return b;
+}
+function concatBytes(...arrs) {
+  const total = arrs.reduce((n, a) => n + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrs) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+// buildAsrFrame round-trips through the same header layout parseAsrFrame reads.
+{
+  const payload = new TextEncoder().encode('{"result":{"utterances":[]}}');
+  const frame = core.buildAsrFrame(core.ASR_MSG_FULL_CLIENT_REQUEST, 0b0000, core.ASR_SER_JSON, core.ASR_COMP_GZIP, payload);
+  check('buildAsrFrame: header byte 0 is version/header-size', frame[0], 0x11);
+  check('buildAsrFrame: header byte 1 packs messageType<<4 | flags', frame[1], (core.ASR_MSG_FULL_CLIENT_REQUEST << 4) | 0b0000);
+  check('buildAsrFrame: header byte 2 packs serialization<<4 | compression', frame[2], (core.ASR_SER_JSON << 4) | core.ASR_COMP_GZIP);
+  check('buildAsrFrame: total length is 8 + payload length', frame.length, 8 + payload.length);
+}
+
+// Valid full-server-response frame (no sequence field, JSON, gzip flag set —
+// parseAsrFrame does not itself gunzip, it just reports needsGunzip).
+{
+  const jsonBytes = new TextEncoder().encode('{"result":{"utterances":[{"text":"hi","definite":true}]}}');
+  const header = new Uint8Array([0x11, (core.ASR_MSG_FULL_SERVER_RESPONSE << 4) | 0b0000, (core.ASR_SER_JSON << 4) | core.ASR_COMP_GZIP, 0x00]);
+  const buf = concatBytes(header, u32be(jsonBytes.length), jsonBytes).buffer;
+  const parsed = core.parseAsrFrame(buf);
+  check('parseAsrFrame: valid response type', parsed.type, 'response');
+  check('parseAsrFrame: valid response needsGunzip reflects compression flag', parsed.needsGunzip, true);
+  check('parseAsrFrame: valid response isJson reflects serialization flag', parsed.isJson, true);
+  check('parseAsrFrame: valid response payloadBytes match input exactly', Array.from(parsed.payloadBytes), Array.from(jsonBytes));
+}
+
+// Error-response frame: errorCode + msgSize + msg, no payload section.
+{
+  const msgBytes = new TextEncoder().encode('bad request');
+  const header = new Uint8Array([0x11, (core.ASR_MSG_ERROR_RESPONSE << 4) | 0b0000, (core.ASR_SER_JSON << 4) | core.ASR_COMP_NONE, 0x00]);
+  const buf = concatBytes(header, u32be(1234), u32be(msgBytes.length), msgBytes).buffer;
+  const parsed = core.parseAsrFrame(buf);
+  check('parseAsrFrame: error response type', parsed.type, 'error');
+  check('parseAsrFrame: error response errorCode', parsed.errorCode, 1234);
+  check('parseAsrFrame: error response msg', parsed.msg, 'bad request');
+}
+
+// Sequence-flag variant: flags bit 0b0001 set means a 4-byte sequence field
+// sits between the header and the payload-size field — parseAsrFrame must
+// skip over it without misreading the payload length.
+{
+  const jsonBytes = new TextEncoder().encode('{"result":{"utterances":[]}}');
+  const header = new Uint8Array([0x11, (core.ASR_MSG_FULL_SERVER_RESPONSE << 4) | 0b0001, (core.ASR_SER_JSON << 4) | core.ASR_COMP_NONE, 0x00]);
+  const sequence = u32be(42);
+  const buf = concatBytes(header, sequence, u32be(jsonBytes.length), jsonBytes).buffer;
+  const parsed = core.parseAsrFrame(buf);
+  check('parseAsrFrame: sequence-flag variant still resolves to response', parsed.type, 'response');
+  check('parseAsrFrame: sequence-flag variant skips the sequence field correctly', Array.from(parsed.payloadBytes), Array.from(jsonBytes));
+}
+
+// Unhandled message type (neither response nor error) is reported, not thrown.
+{
+  const header = new Uint8Array([0x11, (0b0101 << 4) | 0b0000, (core.ASR_SER_JSON << 4) | core.ASR_COMP_NONE, 0x00]);
+  const buf = concatBytes(header, u32be(0)).buffer;
+  const parsed = core.parseAsrFrame(buf);
+  check('parseAsrFrame: unrecognized message type is ignored, not thrown', parsed.type, 'ignored');
+}
+
+// Truncated/malformed buffers must never throw out of parseAsrFrame — the
+// live ASR socket handler relies on this to survive a single bad frame
+// without killing the watchdog/transcription stream (C1).
+{
+  const parsed = core.parseAsrFrame(new Uint8Array([0x11]).buffer);
+  check('parseAsrFrame: truncated buffer returns malformed marker, does not throw', parsed.type, 'malformed');
+}
+{
+  // Claims a huge payload size that overruns the actual buffer.
+  const header = new Uint8Array([0x11, (core.ASR_MSG_FULL_SERVER_RESPONSE << 4) | 0b0000, (core.ASR_SER_JSON << 4) | core.ASR_COMP_NONE, 0x00]);
+  const buf = concatBytes(header, u32be(999999)).buffer;
+  const parsed = core.parseAsrFrame(buf);
+  check('parseAsrFrame: oversized payload-length claim returns malformed marker, does not throw', parsed.type, 'malformed');
+}
+{
+  // Error-response frame truncated before the message bytes arrive.
+  const header = new Uint8Array([0x11, (core.ASR_MSG_ERROR_RESPONSE << 4) | 0b0000, (core.ASR_SER_JSON << 4) | core.ASR_COMP_NONE, 0x00]);
+  const buf = concatBytes(header, u32be(1), u32be(999999)).buffer;
+  const parsed = core.parseAsrFrame(buf);
+  check('parseAsrFrame: truncated error-response returns malformed marker, does not throw', parsed.type, 'malformed');
+}
+
+// meeting.html wires the pure protocol logic through core.js rather than
+// duplicating it inline.
+check('meeting.html buildFrame delegates to MeetingCore.buildAsrFrame', html.includes('MeetingCore.buildAsrFrame'), true);
+check('meeting.html handleAsrFrame delegates to MeetingCore.parseAsrFrame', html.includes('MeetingCore.parseAsrFrame'), true);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {

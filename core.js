@@ -412,6 +412,86 @@
     return `${y}-${m}-${d}`;
   }
 
+  // ── BytePlus ASR binary frame protocol (F1) ─────────────────────────────
+  // Pure byte-level build/parse for the gzip-framed binary protocol used to
+  // talk to BytePlus Seed-ASR streaming. Mechanical extraction from
+  // meeting.html's buildFrame/handleAsrFrame — no semantic changes; this
+  // talks to a live wire protocol. gzip/gunzip stay in meeting.html
+  // (CompressionStream/DecompressionStream are browser-only); parseAsrFrame
+  // returns the raw (still-possibly-gzipped) payload bytes plus enough
+  // metadata for the caller to decide whether/how to decompress and decode.
+  const ASR_MSG_FULL_CLIENT_REQUEST = 0b0001;
+  const ASR_MSG_AUDIO_ONLY_REQUEST = 0b0010;
+  const ASR_MSG_FULL_SERVER_RESPONSE = 0b1001;
+  const ASR_MSG_ERROR_RESPONSE = 0b1111;
+  const ASR_SER_NONE = 0b0000, ASR_SER_JSON = 0b0001;
+  const ASR_COMP_NONE = 0b0000, ASR_COMP_GZIP = 0b0001;
+
+  // Builds one binary frame per the BytePlus header layout: 4-byte header
+  // (version/header-size, message-type/flags, serialization/compression,
+  // reserved) followed by a big-endian uint32 payload length and the
+  // payload bytes themselves.
+  function buildAsrFrame(messageType, flags, serialization, compression, payload) {
+    const out = new Uint8Array(8 + payload.length);
+    out[0] = (0x1 << 4) | 0x1;                       // version 1, header size 1 (4 bytes)
+    out[1] = (messageType << 4) | flags;
+    out[2] = (serialization << 4) | compression;
+    out[3] = 0x00;                                   // reserved
+    new DataView(out.buffer).setUint32(4, payload.length, false);
+    out.set(payload, 8);
+    return out;
+  }
+
+  // Parses one binary frame received from BytePlus. `buf` is anything
+  // DataView accepts (ArrayBuffer or a typed-array's .buffer). Never
+  // throws for malformed/truncated input — callers on a live socket must
+  // not have a single bad frame kill the connection (see C1) — instead
+  // returns { type: 'malformed', error }.
+  //
+  // Return shapes:
+  //   { type: 'error', errorCode, msg }                      — MSG_ERROR_RESPONSE
+  //   { type: 'response', serialization, compression,
+  //     needsGunzip, isJson, payloadBytes }                  — MSG_FULL_SERVER_RESPONSE
+  //   { type: 'ignored', messageType }                       — any other message type
+  //   { type: 'malformed', error }                           — truncated/corrupt buffer
+  function parseAsrFrame(buf) {
+    try {
+      const view = new DataView(buf);
+      const headerBytes = (view.getUint8(0) & 0x0f) * 4;
+      const messageType = view.getUint8(1) >> 4;
+      const serialization = view.getUint8(2) >> 4;
+      const compression = view.getUint8(2) & 0x0f;
+      let offset = headerBytes;
+
+      if (messageType === ASR_MSG_ERROR_RESPONSE) {
+        const errorCode = view.getUint32(offset, false); offset += 4;
+        const msgSize = view.getUint32(offset, false); offset += 4;
+        const msg = new TextDecoder().decode(new Uint8Array(buf, offset, msgSize));
+        return { type: 'error', errorCode, msg };
+      }
+
+      if (messageType !== ASR_MSG_FULL_SERVER_RESPONSE) {
+        return { type: 'ignored', messageType };
+      }
+
+      const flags = view.getUint8(1) & 0x0f;
+      if (flags & 0b0001) offset += 4; // sequence field present only when this bit is set
+      const payloadSize = view.getUint32(offset, false); offset += 4;
+      const payloadBytes = new Uint8Array(buf, offset, payloadSize);
+
+      return {
+        type: 'response',
+        serialization,
+        compression,
+        needsGunzip: compression === ASR_COMP_GZIP,
+        isJson: serialization === ASR_SER_JSON,
+        payloadBytes,
+      };
+    } catch (err) {
+      return { type: 'malformed', error: err };
+    }
+  }
+
   return {
     parseSpeakerSplit,
     dominantLanguage,
@@ -435,5 +515,15 @@
     trimSnapshotToByteBudget,
     validateAutosaveSnapshot,
     sanitizeStoredHtml,
+    ASR_MSG_FULL_CLIENT_REQUEST,
+    ASR_MSG_AUDIO_ONLY_REQUEST,
+    ASR_MSG_FULL_SERVER_RESPONSE,
+    ASR_MSG_ERROR_RESPONSE,
+    ASR_SER_NONE,
+    ASR_SER_JSON,
+    ASR_COMP_NONE,
+    ASR_COMP_GZIP,
+    buildAsrFrame,
+    parseAsrFrame,
   };
 });

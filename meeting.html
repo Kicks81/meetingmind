@@ -974,12 +974,14 @@
 
   const ASR_MODE = 'bigmodel_async';
   const ASR_RESOURCE_ID = 'volc.seedasr.sauc.duration';
-  const MSG_FULL_CLIENT_REQUEST = 0b0001;
-  const MSG_AUDIO_ONLY_REQUEST = 0b0010;
-  const MSG_FULL_SERVER_RESPONSE = 0b1001;
-  const MSG_ERROR_RESPONSE = 0b1111;
-  const SER_NONE = 0b0000, SER_JSON = 0b0001;
-  const COMP_NONE = 0b0000, COMP_GZIP = 0b0001;
+  // Frame build/parse now lives in core.js (F1) — these are re-exported
+  // constants, kept under the same local names to avoid touching call sites.
+  const MSG_FULL_CLIENT_REQUEST = MeetingCore.ASR_MSG_FULL_CLIENT_REQUEST;
+  const MSG_AUDIO_ONLY_REQUEST = MeetingCore.ASR_MSG_AUDIO_ONLY_REQUEST;
+  const MSG_FULL_SERVER_RESPONSE = MeetingCore.ASR_MSG_FULL_SERVER_RESPONSE;
+  const MSG_ERROR_RESPONSE = MeetingCore.ASR_MSG_ERROR_RESPONSE;
+  const SER_NONE = MeetingCore.ASR_SER_NONE, SER_JSON = MeetingCore.ASR_SER_JSON;
+  const COMP_NONE = MeetingCore.ASR_COMP_NONE, COMP_GZIP = MeetingCore.ASR_COMP_GZIP;
 
   // ── OpenRouter call ──────────────────────────────────────────────────────
   async function callOpenRouter(messages, signal, maxTokens = 512) {
@@ -1486,16 +1488,7 @@
     return new Uint8Array(await new Response(ds.readable).arrayBuffer());
   }
 
-  function buildFrame(messageType, flags, serialization, compression, payload) {
-    const out = new Uint8Array(8 + payload.length);
-    out[0] = (0x1 << 4) | 0x1;                       // version 1, header size 1 (4 bytes)
-    out[1] = (messageType << 4) | flags;
-    out[2] = (serialization << 4) | compression;
-    out[3] = 0x00;                                   // reserved
-    new DataView(out.buffer).setUint32(4, payload.length, false);
-    out.set(payload, 8);
-    return out;
-  }
+  const buildFrame = MeetingCore.buildAsrFrame;
 
   async function sendFullClientRequest() {
     const request = {
@@ -1548,30 +1541,21 @@
 
   async function handleAsrFrame(buf) {
     try {
-      const view = new DataView(buf);
-      const headerBytes = (view.getUint8(0) & 0x0f) * 4;
-      const messageType = view.getUint8(1) >> 4;
-      const serialization = view.getUint8(2) >> 4;
-      const compression = view.getUint8(2) & 0x0f;
-      let offset = headerBytes;
+      const parsed = MeetingCore.parseAsrFrame(buf);
 
-      if (messageType === MSG_ERROR_RESPONSE) {
-        const errorCode = view.getUint32(offset, false); offset += 4;
-        const msgSize = view.getUint32(offset, false); offset += 4;
-        const msg = new TextDecoder().decode(new Uint8Array(buf, offset, msgSize));
-        console.error('ASR error', errorCode, msg);
+      if (parsed.type === 'malformed') throw parsed.error;
+
+      if (parsed.type === 'error') {
+        console.error('ASR error', parsed.errorCode, parsed.msg);
         lastAsrFrameAt = Date.now(); // a well-formed error frame is still proof the stream is alive
         return;
       }
 
-      if (messageType !== MSG_FULL_SERVER_RESPONSE) return;
+      if (parsed.type === 'ignored') return;
 
-      const flags = view.getUint8(1) & 0x0f;
-      if (flags & 0b0001) offset += 4; // sequence field present only when this bit is set
-      const payloadSize = view.getUint32(offset, false); offset += 4;
-      let payload = new Uint8Array(buf, offset, payloadSize);
-      if (compression === COMP_GZIP) payload = await gunzip(payload);
-      if (serialization !== SER_JSON) return;
+      let payload = parsed.payloadBytes;
+      if (parsed.needsGunzip) payload = await gunzip(payload);
+      if (!parsed.isJson) return;
 
       const rawText = new TextDecoder().decode(payload);
       const json = JSON.parse(rawText);

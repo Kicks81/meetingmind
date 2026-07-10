@@ -303,6 +303,22 @@ malformed binary, truncated header, or decode failure is silently caught and ign
 Consequence: a bad frame no longer defeats the watchdog. The try-catch around
 `handleAsrFrame` ensures malformed frames never throw unhandled exceptions.
 
+### D21. BytePlus protocol extraction to core.js (2026-07-10)
+BytePlus ASR's binary framing (gzip, `MSG_TYPE` headers, payload encoding/decoding) was
+originally inline in meeting.html. Extracted to pure functions in core.js: `buildBytesPlusFrame`
+(packs request headers, gzips payload, returns binary) and `parseAsrResponse` (unpacks frames,
+decompresses, JSON-parses, type-switches). Both are UMD-wrapped so Node evals can import
+unmodified. Why extract?
+1. **Auditability**: Protocol bugs (truncated frames, bad compression, malformed JSON) are
+   now testable in isolation; evals cover error paths so no regression hides in inline code.
+2. **Future hardening**: D16 (frame validation) and D3 (error resilience) are now easier to
+   reason about — the frame boundary is a clear, tested function, not scattered logic.
+3. **Shared code path**: meeting.html and any future CLI/headless runner both use the same
+   frame logic, preventing divergence and secrets leakage (keys never leave the relay).
+
+Evals added for: valid frames (en/zh/mixed utterances), error responses, truncated headers,
+invalid gzip, JSON parse failures, type checking. All pass and serve as regression locks.
+
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

@@ -30,6 +30,15 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **F1. Extract BytePlus binary frame build/parse into core.js with eval fixtures.**
+  Moved BytePlus `gzip` binary frame protocol logic (header packing, `MSG_TYPE` flags, payload
+  compression, UTF-8 JSON decode) from inline meeting.html into pure, testable functions in
+  core.js (`buildBytesPlusFrame`, `parseAsrResponse`), keeping the UMD wrapper so both browser
+  and Node evals can import unmodified. Created comprehensive eval fixtures (en/zh/mixed
+  utterances, error frames, truncated headers, malformed JSON) that catch any regression in
+  framing or message parsing. Validated against live BytePlus output. This extraction unblocks
+  future protocol debugging and makes the ASR implementation auditable from a single source.
+  (commit `F1:`)
 - [x] **D3. Obsidian export ledger — chunks are traceable and recoverable.**
   Each export chunk is logged with: chunkNumber, notePath, timestamp, char count, and sentAt.
   The ledger is small (one entry per chunk sent) and **never trimmed by autosave quota**
