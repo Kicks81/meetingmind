@@ -939,6 +939,7 @@
   let sourceNode = null;
   let systemSourceNode = null;
   let processorNode = null;
+  let usingWorklet = false; // true if processorNode is an AudioWorkletNode instead of a ScriptProcessorNode
   let muteNode = null;
   let finalizedUtteranceCount = 0;
   let interimEl = null;
@@ -1610,6 +1611,69 @@
     }
   }
 
+  // AudioWorklet source, loaded from a Blob URL so meeting.html stays a single
+  // file with no separate worklet module to ship (D2/U1: no build step, works
+  // over file:// and http://localhost). Buffers samples into ~2048-frame
+  // chunks — the same cadence as the old ScriptProcessorNode(2048, 1, 1) — so
+  // BytePlus pacing is unaffected, then posts each chunk to the main thread.
+  const AUDIO_WORKLET_CHUNK_SIZE = 2048;
+  const AUDIO_WORKLET_SOURCE = `
+    class MeetingCaptureProcessor extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this._buf = new Float32Array(${AUDIO_WORKLET_CHUNK_SIZE});
+        this._len = 0;
+      }
+      process(inputs) {
+        const input = inputs[0];
+        const channel = input && input[0];
+        if (channel && channel.length) {
+          let i = 0;
+          while (i < channel.length) {
+            const room = this._buf.length - this._len;
+            const n = Math.min(room, channel.length - i);
+            this._buf.set(channel.subarray(i, i + n), this._len);
+            this._len += n;
+            i += n;
+            if (this._len === this._buf.length) {
+              this.port.postMessage(this._buf.slice(0));
+              this._len = 0;
+            }
+          }
+        }
+        return true; // keep the processor alive for the life of the graph
+      }
+    }
+    registerProcessor('meeting-capture-processor', MeetingCaptureProcessor);
+  `;
+
+  // Builds the audio-capture node that feeds `onChunk(Float32Array)`.
+  // Prefers an AudioWorkletNode (runs off the main thread, avoiding D13's
+  // main-thread-congestion delay); falls back to the deprecated
+  // ScriptProcessorNode if audioWorklet is unavailable or addModule fails.
+  async function createCaptureNode(ctx, onChunk) {
+    if (ctx.audioWorklet) {
+      try {
+        const blobUrl = URL.createObjectURL(new Blob([AUDIO_WORKLET_SOURCE], { type: 'application/javascript' }));
+        try {
+          await ctx.audioWorklet.addModule(blobUrl);
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+        const node = new AudioWorkletNode(ctx, 'meeting-capture-processor', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' });
+        node.port.onmessage = (e) => onChunk(e.data);
+        return { node, isWorklet: true };
+      } catch (err) {
+        console.warn('AudioWorklet unavailable, falling back to ScriptProcessorNode:', err.message);
+      }
+    } else {
+      console.warn('audioContext.audioWorklet unavailable, falling back to ScriptProcessorNode.');
+    }
+    const node = ctx.createScriptProcessor(AUDIO_WORKLET_CHUNK_SIZE, 1, 1);
+    node.onaudioprocess = (e) => onChunk(e.inputBuffer.getChannelData(0));
+    return { node, isWorklet: false };
+  }
+
   async function startRecognition() {
     const apiKey = document.getElementById('bytePlusKey').value.trim();
     const relayUrl = document.getElementById('relayUrl').value.trim() || 'ws://localhost:8765';
@@ -1668,7 +1732,16 @@
 
     audioCtx = new AudioContext({ sampleRate: 16000 });
     sourceNode = audioCtx.createMediaStreamSource(mediaStream);
-    processorNode = audioCtx.createScriptProcessor(2048, 1, 1);
+    // Gate actual sending on asrReady rather than on `isRecording` (which the
+    // caller only sets true after this whole function resolves) so we start
+    // streaming the instant BytePlus's session is ready, not later.
+    const onCaptureChunk = (float32Chunk) => {
+      if (!asrReady || !asrSocket || asrSocket.readyState !== WebSocket.OPEN) return;
+      sendAudioChunk(floatTo16BitPCM(float32Chunk), false);
+    };
+    const capture = await createCaptureNode(audioCtx, onCaptureChunk);
+    processorNode = capture.node;
+    usingWorklet = capture.isWorklet;
     muteNode = audioCtx.createGain();
     muteNode.gain.value = 0;
 
@@ -1716,13 +1789,8 @@
     muteNode.connect(audioCtx.destination);
 
     // The audio graph is now fully built and already producing samples —
-    // gate actual sending on asrReady rather than on `isRecording` (which
-    // the caller only sets true after this whole function resolves) so we
-    // start streaming the instant BytePlus's session is ready, not later.
-    processorNode.onaudioprocess = (e) => {
-      if (!asrReady || !asrSocket || asrSocket.readyState !== WebSocket.OPEN) return;
-      sendAudioChunk(floatTo16BitPCM(e.inputBuffer.getChannelData(0)), false);
-    };
+    // capture.node is already wired to call onCaptureChunk (worklet: via
+    // port.onmessage; fallback: via onaudioprocess), set up above.
 
     await openAsrSession(apiKey, relayUrl);
   }
@@ -1808,7 +1876,12 @@
   async function stopRecognition() {
     asrEpoch++; // orphan any in-flight openAsrSession()/scheduleAsrReconnect() from this session
     asrReady = false;
-    if (processorNode) { processorNode.onaudioprocess = null; processorNode.disconnect(); processorNode = null; }
+    if (processorNode) {
+      if (usingWorklet) { processorNode.port.onmessage = null; } else { processorNode.onaudioprocess = null; }
+      processorNode.disconnect();
+      processorNode = null;
+    }
+    usingWorklet = false;
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
     if (micGainNode) { micGainNode.disconnect(); micGainNode = null; }
     if (systemSourceNode) { systemSourceNode.disconnect(); systemSourceNode = null; }

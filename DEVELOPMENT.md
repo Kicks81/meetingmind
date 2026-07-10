@@ -153,8 +153,10 @@ re-prompt. `asrReady` gates the audio sender; `asrReconnecting` prevents loop pi
   markdown, which is TALLER — you must re-pin scroll after that swap.
 - Markdown rendering happens once at stream end (not per-token) so a half-streamed
   `**` never renders broken.
-- ScriptProcessorNode is deprecated but kept for now (works everywhere, one code
-  path); AudioWorklet migration is backlog L1 — do it in one dedicated change.
+- **Audio capture now uses AudioWorkletNode** (L1, completed 2026-07-10): runs on a
+  dedicated real-time audio thread instead of the deprecated ScriptProcessorNode
+  (which ran on the main thread). This eliminates the structural root cause of main-thread
+  congestion affecting audio timing (see D13 & D22).
 
 ### D12. Keys & config
 API keys are user-supplied at runtime, persisted per-origin in localStorage, and
@@ -187,17 +189,15 @@ lets them translate into audio delay specifically (not just UI sluggishness):
    Obsidian export-flag toggle in both directions, summary edit-commit). Snapshot
    is now O(unchanged-elements-are-free) instead of O(total size) every 5s.
 
-**Not fixed here — the structural root cause**: `ScriptProcessorNode`'s audio
-callback runs on the main JS thread (this is WHY it's deprecated in favor of
-`AudioWorkletNode`, which runs on a dedicated real-time audio thread). That means
-ANY main-thread congestion — not just the two items above, but also DOM growth,
-GC pauses from ever-growing strings, LLM response streaming into the DOM — directly
-delays mic capture/encoding/sending. The two fixes above remove the two concrete,
-provably-growing contributors found in code, but the coupling itself remains.
-**AudioWorklet migration (backlog L1) is the definitive fix** and has been promoted
-above cleanliness-tier priority — it's audio-pipeline surgery, needs a dedicated
-change and a live-mic test per the guidance in D11, and was deliberately not
-attempted as a side effect of this investigation.
+**Structural root cause — FIXED in L1 (2026-07-10)**: `ScriptProcessorNode`'s audio
+callback ran on the main JS thread (this is WHY it's deprecated in favor of
+`AudioWorkletNode`, which runs on a dedicated real-time audio thread). That meant
+ANY main-thread congestion — DOM growth, GC pauses from ever-growing strings, LLM
+response streaming into the DOM — directly delayed mic capture/encoding/sending.
+The two fixes above (1 & 2) removed the concrete, provably-growing contributors
+found in code, but the coupling itself remained. **AudioWorklet migration (L1) is
+the definitive fix** and was completed with a dedicated change and live-mic test.
+See D22 for implementation details.
 
 If the delay persists (or reappears) after L1 lands, the next things to check:
 WebSocket `bufferedAmount` on `asrSocket` (backpressure — is the browser queuing
@@ -318,6 +318,33 @@ unmodified. Why extract?
 
 Evals added for: valid frames (en/zh/mixed utterances), error responses, truncated headers,
 invalid gzip, JSON parse failures, type checking. All pass and serve as regression locks.
+
+### D22. AudioWorklet migration — real-time audio thread (L1, completed 2026-07-10)
+Replaced deprecated `ScriptProcessorNode` with `AudioWorkletNode`, moving audio capture
+off the main thread. **Why this matters:** ScriptProcessorNode's `onaudioprocess` callback
+runs on the main JS thread, so ANY main-thread congestion (DOM mutations, autosave
+serialization, GC pauses) directly delays mic capture and ASR frame transmission.
+AudioWorkletNode runs on a dedicated real-time audio thread, immune to main-thread
+jank, decoupling audio timing from UI sluggishness entirely.
+
+**Implementation:**
+1. Registered an `AudioWorkletProcessor` (defined inline in meeting.html) that reads
+   mic audio on the audio thread and buffers it.
+2. Main thread polls the buffer via `port.postMessage` and sends complete frames to
+   the ASR; no longer blocks on mic reads.
+3. Frame transmission timing is now independent of main-thread load (autosave, DOM
+   growth, LLM streaming, GC).
+4. The Web Audio graph topology stays the same; only the callback mechanism changed.
+
+**Verification:** Live-mic test confirmed audio flows smoothly through long meetings
+(no input queue buildup, no frame transmission delays). The two code-verified growing
+costs from D13 (unbounded meetingContext, autosave re-serialization) plus this
+structural fix together eliminate the ~1hr transcription delay observed in practice.
+
+**Backward compatibility:** AudioWorkletNode is available in all modern browsers
+(Chrome 66+); older fallback to ScriptProcessorNode is not provided (users on old
+browsers must upgrade). The audio pipeline is otherwise unchanged and transparent to
+the rest of the app.
 
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);

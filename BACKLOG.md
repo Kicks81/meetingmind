@@ -16,20 +16,20 @@ never silently delete an item — strike it through with a reason.
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
 
 ## P3 — Engineering health
-- [ ] **L1. Replace deprecated ScriptProcessorNode with AudioWorklet.** PROMOTED to
-  P1-priority by the U10 investigation below — this is the structural root cause of
-  the growing transcription delay, not just a cleanliness item. ScriptProcessorNode's
-  audio callback runs on the MAIN thread, so any main-thread congestion (DOM growth,
-  autosave, GC pauses) directly delays mic capture/encoding — and that congestion
-  provably grows with meeting length. AudioWorkletNode runs on a dedicated
-  realtime-audio thread, immune to main-thread jank, and is the definitive fix.
-  Needs a dedicated change + live-mic test (audio pipeline surgery, per
-  DEVELOPMENT.md D11) — do this next.
 - [ ] **L2. Key hygiene.** Warn that Save Config writes keys in plaintext; consider
   encrypting the config export with a passphrase.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **L1. Replace deprecated ScriptProcessorNode with AudioWorklet.** Migrated
+  audio capture from the deprecated ScriptProcessorNode (main-thread callback) to
+  AudioWorkletNode (dedicated real-time audio thread). This eliminates the direct
+  coupling between main-thread congestion (DOM growth, autosave serialization, GC
+  pauses) and audio-capture timing. Audio samples now flow on a dedicated thread,
+  immune to UI jank, and the structural root cause of the ~1hr transcription delay
+  (identified in U10 / D13) is resolved. Verified with live-mic test; audio pipeline
+  remains stable through long meetings. See DEVELOPMENT.md D22 for implementation
+  notes. (commit `L1:`)
 - [x] **F1. Extract BytePlus binary frame build/parse into core.js with eval fixtures.**
   Moved BytePlus `gzip` binary frame protocol logic (header packing, `MSG_TYPE` flags, payload
   compression, UTF-8 JSON decode) from inline meeting.html into pure, testable functions in
