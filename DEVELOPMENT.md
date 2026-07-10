@@ -493,6 +493,25 @@ plaintext and compromised. Encryption with a user-supplied passphrase mitigates 
 4. **Constants hardcoded**: PBKDF2 iterations (100k, matches OWASP recommendations),
    salt/IV sizes (16/12 bytes, standard for GCM), AES-256-GCM algorithm.
 
+### D27. Relay diagnostics — observability for troubleshooting (E4, planned)
+Connection failures, ASR stalls, and frame delivery issues are hard to diagnose without
+visibility into relay state. E4 will add diagnostics UI to meeting.html:
+1. **Relay health dashboard** (new settings panel): live display of WebSocket state
+   (connecting / connected / closed), buffered bytes, frames sent/received counts,
+   uptime, and detected backpressure.
+2. **Frame inspection**: optional logging/replay of the last N frames (UTC timestamp,
+   payload size, MSG_TYPE, parse success/error). Useful for "why did the relay reject
+   my frame?" debugging without a full packet capture.
+3. **Connection timeline**: events (open, close, reconnect, backpressure spike) logged
+   with timestamps so the user can correlate "I noticed the audio stopped at 3:22 PM"
+   with "relay closed at 3:22:15, reconnected at 3:22:40".
+4. **Export diagnostics log**: option to download a text report of the full session's
+   relay events + frame stats, for sharing with support or the BytePlus team.
+
+This is backlog item E4 (after E1 relay hardening, E2 startup checks, E3 encryption).
+Not critical for normal use; owned by observability / troubleshooting, not by the
+transcription path itself.
+
 ## 5. How to keep improving
 Run the loop: pick the top of [BACKLOG.md](BACKLOG.md) → implement → verify
 (`node evals/run.mjs` + browser check; add zh/en/mixed fixtures for any text-logic

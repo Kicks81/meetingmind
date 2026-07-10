@@ -369,6 +369,44 @@
     return out;
   }
 
+  // ── Config export/import envelope (E3) ──────────────────────────────────
+  // Save Config can export either a plain settings object or, when it holds
+  // API keys, a passphrase-encrypted envelope. These helpers only build/parse/
+  // validate the JSON shape — meeting.html owns the actual WebCrypto calls
+  // (PBKDF2 + AES-GCM), which can't run in the Node eval harness.
+  const CONFIG_ENC_VERSION = 'v1';
+
+  // True if any of `secretFields` is present in `config` with a non-empty
+  // (after trimming) string value. Used to decide whether Save Config should
+  // offer/require the encryption choice.
+  function configHasSecrets(config, secretFields) {
+    if (!config || typeof config !== 'object') return false;
+    return secretFields.some(f => typeof config[f] === 'string' && config[f].trim().length > 0);
+  }
+
+  // Builds the JSON envelope written to disk for an encrypted export. Inputs
+  // are already base64-encoded strings produced by the caller's crypto step.
+  function buildConfigEnvelope(saltB64, ivB64, dataB64) {
+    return { enc: CONFIG_ENC_VERSION, salt: saltB64, iv: ivB64, data: dataB64 };
+  }
+
+  // True if the parsed JSON looks like one of our encrypted envelopes (as
+  // opposed to a plain config object saved before this feature existed).
+  function isEncryptedConfigEnvelope(obj) {
+    return !!obj && typeof obj === 'object' && obj.enc === CONFIG_ENC_VERSION;
+  }
+
+  // Validates an encrypted envelope's shape and returns the three fields the
+  // caller needs to feed WebCrypto, or null if the envelope is malformed
+  // (missing/non-string fields) — never throws.
+  function parseConfigEnvelope(obj) {
+    if (!isEncryptedConfigEnvelope(obj)) return null;
+    const { salt, iv, data } = obj;
+    if (typeof salt !== 'string' || !salt || typeof iv !== 'string' || !iv ||
+        typeof data !== 'string' || !data) return null;
+    return { salt, iv, data };
+  }
+
   // ── Rendering helpers ────────────────────────────────────────────────────
   function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -542,6 +580,10 @@
     trimSnapshotToByteBudget,
     validateAutosaveSnapshot,
     sanitizeStoredHtml,
+    configHasSecrets,
+    buildConfigEnvelope,
+    isEncryptedConfigEnvelope,
+    parseConfigEnvelope,
     ASR_MSG_FULL_CLIENT_REQUEST,
     ASR_MSG_AUDIO_ONLY_REQUEST,
     ASR_MSG_FULL_SERVER_RESPONSE,

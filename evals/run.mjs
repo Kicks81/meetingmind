@@ -696,6 +696,75 @@ check('meeting.html handleAsrFrame delegates to MeetingCore.parseAsrFrame', html
 check('meeting.html has a single ASR lifecycle state object', html.includes("const asrState = { value: 'idle' }"), true);
 check('meeting.html transitions go through setAsrState, which validates via core.js', html.includes('MeetingCore.nextAsrState(asrState.value, next)'), true);
 
+// ── Config export/import envelope (E3) ──────────────────────────────────────
+check('configHasSecrets: true when apiKey present',
+  core.configHasSecrets({ apiKey: 'sk-or-abc', relayUrl: 'ws://localhost:8765' }, ['apiKey', 'bytePlusKey']),
+  true);
+
+check('configHasSecrets: true when bytePlusKey present',
+  core.configHasSecrets({ bytePlusKey: 'bp-xyz' }, ['apiKey', 'bytePlusKey']),
+  true);
+
+check('configHasSecrets: false when only non-secret fields set',
+  core.configHasSecrets({ relayUrl: 'ws://localhost:8765', obsidianVault: 'Vault' }, ['apiKey', 'bytePlusKey']),
+  false);
+
+check('configHasSecrets: whitespace-only key value counts as absent',
+  core.configHasSecrets({ apiKey: '   ' }, ['apiKey', 'bytePlusKey']),
+  false);
+
+check('configHasSecrets: empty config is false',
+  core.configHasSecrets({}, ['apiKey', 'bytePlusKey']),
+  false);
+
+check('buildConfigEnvelope: shape',
+  core.buildConfigEnvelope('c2FsdA==', 'aXY=', 'ZGF0YQ=='),
+  { enc: 'v1', salt: 'c2FsdA==', iv: 'aXY=', data: 'ZGF0YQ==' });
+
+check('isEncryptedConfigEnvelope: true for a v1 envelope',
+  core.isEncryptedConfigEnvelope({ enc: 'v1', salt: 'a', iv: 'b', data: 'c' }),
+  true);
+
+check('isEncryptedConfigEnvelope: false for a plain config object',
+  core.isEncryptedConfigEnvelope({ apiKey: 'sk-or-abc', relayUrl: 'ws://localhost:8765' }),
+  false);
+
+check('isEncryptedConfigEnvelope: false for null/non-object',
+  core.isEncryptedConfigEnvelope(null),
+  false);
+
+check('parseConfigEnvelope: extracts salt/iv/data from a valid envelope',
+  core.parseConfigEnvelope({ enc: 'v1', salt: 'S', iv: 'I', data: 'D' }),
+  { salt: 'S', iv: 'I', data: 'D' });
+
+check('parseConfigEnvelope: null for a plain config (not an envelope)',
+  core.parseConfigEnvelope({ apiKey: 'sk-or-abc' }),
+  null);
+
+check('parseConfigEnvelope: null when a required field is missing',
+  core.parseConfigEnvelope({ enc: 'v1', salt: 'S', iv: 'I' }),
+  null);
+
+check('parseConfigEnvelope: null when a required field is empty string',
+  core.parseConfigEnvelope({ enc: 'v1', salt: '', iv: 'I', data: 'D' }),
+  null);
+
+check('meeting.html: Save Config offers passphrase encryption when keys are present',
+  html.includes('encryptConfig'),
+  true);
+
+check('meeting.html: Load Config handles the encrypted envelope via core.js',
+  html.includes('MeetingCore.isEncryptedConfigEnvelope'),
+  true);
+
+check('meeting.html: a plaintext-export warning is present',
+  /plain ?text/i.test(html),
+  true);
+
+check('meeting.html: a localStorage note is present near the key inputs',
+  html.includes('localStorage') && /this browser/i.test(html),
+  true);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {

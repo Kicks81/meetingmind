@@ -538,6 +538,7 @@
     </select>
     <input class="api-input" type="password" id="apiKey" placeholder="OpenRouter API key (sk-or-...)" autocomplete="off">
     <input class="api-input" style="width:180px;" type="password" id="bytePlusKey" placeholder="BytePlus API key (ASR)" autocomplete="off">
+    <span style="font-size:11px;opacity:.7;align-self:center;" title="Keys are kept only in this browser's localStorage for this origin — they are never sent anywhere except OpenRouter/BytePlus/your relay.">&#128274; keys stored in this browser's localStorage</span>
     <input class="api-input" style="width:150px;" type="text" id="relayUrl" placeholder="ws://localhost:8765" value="ws://localhost:8765">
     <input class="api-input" style="width:130px;" type="text" id="obsidianVault" placeholder="Obsidian vault name">
     <input class="api-input" style="width:120px;" type="text" id="obsidianFolder" placeholder="Notes folder" value="Incorp Transformation Project/Meeting Notes" list="folderOptions" title="Where meeting notes are created inside the vault (a YYYY-MM subfolder is added automatically)">
@@ -2778,37 +2779,132 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   }
 
   // ── Save/Load config as a file (survives browser-policy data clearing) ──
-  function saveConfig() {
-    const config = {};
-    for (const fieldId of Object.keys(PERSISTED_FIELDS)) {
-      config[fieldId] = document.getElementById(fieldId).value;
-    }
-    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+  // (E3) Which PERSISTED_FIELDS hold secrets — Save Config offers passphrase
+  // encryption (or an explicit plaintext warning) whenever any are set.
+  const SECRET_FIELDS = ['apiKey', 'bytePlusKey'];
+  const PBKDF2_ITERATIONS = 200000;
+
+  function downloadJson(obj, filename) {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'meetingmind-config.json';
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
   }
 
+  function bufToB64(buf) {
+    let binary = '';
+    for (const byte of new Uint8Array(buf)) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+
+  function b64ToBuf(b64) {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  // Derives an AES-GCM key from a passphrase with PBKDF2-SHA256. Never logs
+  // the passphrase or derived key material.
+  async function deriveConfigKey(passphrase, saltBuf, usages) {
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: saltBuf, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      keyMaterial, { name: 'AES-GCM', length: 256 }, false, usages);
+  }
+
+  // Returns the JSON envelope (built via MeetingCore, so its shape stays in
+  // sync with the parser) to write to disk.
+  async function encryptConfig(config, passphrase) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveConfigKey(passphrase, salt, ['encrypt']);
+    const plaintext = new TextEncoder().encode(JSON.stringify(config));
+    const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
+    return MeetingCore.buildConfigEnvelope(bufToB64(salt), bufToB64(iv), bufToB64(cipher));
+  }
+
+  // Throws on wrong passphrase / corrupted data — AES-GCM's auth tag check
+  // fails and crypto.subtle.decrypt rejects. Caller turns that into a
+  // friendly message; never log the passphrase or the decrypted keys.
+  async function decryptConfig(envelope, passphrase) {
+    const parsed = MeetingCore.parseConfigEnvelope(envelope);
+    if (!parsed) throw new Error('Malformed encrypted config file.');
+    const salt = b64ToBuf(parsed.salt), iv = b64ToBuf(parsed.iv), data = b64ToBuf(parsed.data);
+    const key = await deriveConfigKey(passphrase, salt, ['decrypt']);
+    const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(iv) }, key, data);
+    return JSON.parse(new TextDecoder().decode(plainBuf));
+  }
+
+  async function saveConfig() {
+    const config = {};
+    for (const fieldId of Object.keys(PERSISTED_FIELDS)) {
+      config[fieldId] = document.getElementById(fieldId).value;
+    }
+
+    if (MeetingCore.configHasSecrets(config, SECRET_FIELDS)) {
+      const encrypt = confirm(
+        'This config includes your API key(s).\n\n' +
+        'Click OK to encrypt the exported file with a passphrase (recommended).\n' +
+        'Click Cancel to export as plain text — your keys will be stored in plain text ' +
+        'in the file, readable by anyone who opens it.');
+      if (encrypt) {
+        const passphrase = prompt('Enter a passphrase to encrypt this config file (you will need it to load it again):');
+        if (!passphrase) { alert('Export cancelled — no passphrase entered.'); return; }
+        try {
+          const envelope = await encryptConfig(config, passphrase);
+          downloadJson(envelope, 'meetingmind-config.json');
+        } catch {
+          alert('Encryption failed — config was not exported.');
+        }
+        return;
+      }
+      alert('Exporting API keys in plain text. Anyone with this file can read your keys — store it somewhere private.');
+    }
+
+    downloadJson(config, 'meetingmind-config.json');
+  }
+
+  function applyLoadedConfig(config) {
+    for (const [fieldId, storageKey] of Object.entries(PERSISTED_FIELDS)) {
+      if (config[fieldId] === undefined) continue;
+      document.getElementById(fieldId).value = config[fieldId];
+      localStorage.setItem(storageKey, config[fieldId]);
+    }
+  }
+
   function loadConfig(event) {
     const file = event.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
+      let parsed;
       try {
-        const config = JSON.parse(reader.result);
-        for (const [fieldId, storageKey] of Object.entries(PERSISTED_FIELDS)) {
-          if (config[fieldId] === undefined) continue;
-          document.getElementById(fieldId).value = config[fieldId];
-          localStorage.setItem(storageKey, config[fieldId]);
-        }
+        parsed = JSON.parse(reader.result);
       } catch {
         alert('That file was not a valid MeetingMind config JSON.');
+        return;
       }
+
+      if (MeetingCore.isEncryptedConfigEnvelope(parsed)) {
+        const passphrase = prompt('This config file is encrypted. Enter its passphrase:');
+        if (!passphrase) return;
+        try {
+          const config = await decryptConfig(parsed, passphrase);
+          applyLoadedConfig(config);
+        } catch {
+          alert('Wrong passphrase, or the file is corrupted — could not decrypt this config.');
+        }
+        return;
+      }
+
+      applyLoadedConfig(parsed);
     };
     reader.readAsText(file);
     event.target.value = ''; // allow reselecting the same file later
