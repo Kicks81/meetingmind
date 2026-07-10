@@ -367,6 +367,34 @@ all legal and illegal transition pairs (22 checks each), ensuring no regression
 in the state machine rules. Result: the lifecycle is now explicit, auditable,
 and race-condition-safe.
 
+### D24. Audio-loss detection and recovery (U13, completed 2026-07-10)
+Audio capture devices can fail silently: USB headset disconnects, driver crashes,
+system suspend/resume, or kernel buffer stalls. The app would continue "recording"
+with an open ASR socket, but no audio frames flowing — the user talks, hears
+nothing transcribed, and discovers the loss minutes later. To detect and surface
+this immediately, implemented a watchdog that monitors audio-sample flow:
+1. **Liveness tracking**: `hasAudioFlowed` flag marks whether the audio worklet has
+   written *any* samples to BytePlus since recording started. Set to `false` on
+   `startRecognition()`, set to `true` on the first successful sample batch.
+2. **Silence timeout watchdog**: Every 2 seconds while recording, check if
+   `lastAudioAt` (timestamp of last sample write) exceeds a threshold (5s without
+   audio). If so, emit `audio-loss` event and show a loud, user-dismissible alert.
+3. **Recovery UI**: User can "Retry Audio" (attempts mic permission + re-opens
+   audio graph) or "Continue" (accepts the gap, keeps ASR connection). No data
+   loss — already-captured segments stay in the transcript; retry reconnects the
+   same ASR session so numbering remains in sync (per D3).
+4. **No false positives**: The watchdog is active only while recording AND only if
+   audio HAS flowed (no alert for dead-air meetings where the user never spoke).
+   Extracted to core functions (`resetAudioLiveness`, `checkAudioFlow`) for testability.
+
+Why a dedicated watchdog instead of relying on ASR connection drops? Because the
+BytePlus socket can remain open and nominally "healthy" (heartbeats/keep-alives)
+while silently dropping the audio stream itself. A healthy socket with zero audio
+is indistinguishable from a silent speaker without sample-flow visibility. This
+design is simple (no complex driver API introspection), fails safe (worst case: a
+false alarm that the user dismisses), and is user-friendly (a single, clear action
+instead of "check the console logs").
+
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

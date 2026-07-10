@@ -1775,6 +1775,7 @@
     // longer than BytePlus's 8-second "waiting for first packet" timeout —
     // so the session must not exist yet while we're waiting on that click.
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    wireTrackEndedHandlers(mediaStream.getAudioTracks(), 'mic'); // U13
 
     // Mic alone only hears you — for online calls (Teams/Zoom), the other
     // participants' voices come through system/speaker output. If a virtual
@@ -1799,7 +1800,9 @@
             s.getTracks().forEach(t => t.stop()); // it's the mic we already have
             continue;
           }
-          extraStreams.push(s);
+          const entry = { stream: s, node: null, deviceId: d.deviceId, label: d.label || d.deviceId, dead: false };
+          extraStreams.push(entry);
+          wireTrackEndedHandlers(s.getAudioTracks(), 'extra', entry); // U13
           console.log('[all sources] capturing input:', d.label || d.deviceId);
         } catch (err) {
           console.warn('[all sources] could not open device:', d.label || d.deviceId, err.message);
@@ -1816,6 +1819,7 @@
     } else {
       systemStream = await captureSystemAudioViaSharePicker();
     }
+    if (systemStream) wireTrackEndedHandlers(systemStream.getAudioTracks(), 'system'); // U13
 
     audioCtx = new AudioContext({ sampleRate: 16000 });
     sourceNode = audioCtx.createMediaStreamSource(mediaStream);
@@ -1841,11 +1845,10 @@
     micGainNode.connect(processorNode);
 
     // "All sources" extra input devices — summed in alongside the mic.
-    for (const s of extraStreams) {
-      if (!s.getAudioTracks().length) continue;
-      const node = audioCtx.createMediaStreamSource(s);
-      node.connect(processorNode);
-      extraSourceNodes.push(node);
+    for (const entry of extraStreams) {
+      if (!entry.stream.getAudioTracks().length) continue;
+      entry.node = audioCtx.createMediaStreamSource(entry.stream);
+      entry.node.connect(processorNode);
     }
 
     if (systemStream && systemStream.getAudioTracks().length) {
@@ -1976,14 +1979,16 @@
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
     if (micGainNode) { micGainNode.disconnect(); micGainNode = null; }
     if (systemSourceNode) { systemSourceNode.disconnect(); systemSourceNode = null; }
-    extraSourceNodes.forEach(n => n.disconnect());
-    extraSourceNodes = [];
-    extraStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
+    extraStreams.forEach(e => { if (e.node) e.node.disconnect(); e.stream.getTracks().forEach(t => t.stop()); });
     extraStreams = [];
     if (muteNode) { muteNode.disconnect(); muteNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (systemStream) { systemStream.getTracks().forEach(t => t.stop()); systemStream = null; }
     if (audioCtx) { await audioCtx.close(); audioCtx = null; }
+    // U13: a deliberate stop always resolves any outstanding audio-loss alarm.
+    micTrackDead = false;
+    systemTrackDead = false;
+    hideAudioLossBanner();
     const socketToClose = asrSocket; // capture before nulling, or the deferred close() below is a no-op
     if (socketToClose && socketToClose.readyState === WebSocket.OPEN) {
       await sendAudioChunk(new Uint8Array(0), true); // still uses global asrSocket — send before nulling it
@@ -1992,6 +1997,176 @@
     asrSocket = null;
     if (interimEl) { interimEl.remove(); interimEl = null; }
   }
+
+  // ── U13: Silent-death protection ────────────────────────────────────────
+  // Chrome ends a track (fires 'ended') when the user clicks "Stop sharing"
+  // on the screen/tab-share bar, revokes mic permission mid-meeting, or a
+  // capture device disappears — the old app kept saying "Recording" with
+  // dead audio flowing in. Every track we capture gets an 'ended' listener
+  // wired at acquisition time; an unexpected end (while isRecording is true)
+  // flips a per-source "dead" flag and raises a banner + alarmed status dot
+  // instead of silently losing audio.
+  function wireTrackEndedHandlers(tracks, kind, extraEntry) {
+    tracks.forEach(t => {
+      t.addEventListener('ended', () => onAudioTrackEnded(kind, extraEntry, t));
+    });
+  }
+
+  function onAudioTrackEnded(kind, extraEntry) {
+    // Deliberate stops (stopRecognition calling track.stop()) always happen
+    // after isRecording has already flipped false (setAsrState('stopping')
+    // runs first in toggleRecording) — so this only fires the alarm for
+    // genuinely unexpected endings while a meeting is actually recording.
+    if (!isRecording) return;
+    if (kind === 'mic') micTrackDead = true;
+    else if (kind === 'system') systemTrackDead = true;
+    else if (kind === 'extra' && extraEntry) extraEntry.dead = true;
+    console.warn('[U13] audio track ended unexpectedly:', kind, extraEntry?.label || '');
+    showAudioLossBanner();
+  }
+
+  function anyAudioTrackLive() {
+    const tracks = [
+      ...(mediaStream ? mediaStream.getAudioTracks() : []),
+      ...(systemStream ? systemStream.getAudioTracks() : []),
+      ...extraStreams.flatMap(e => e.stream.getAudioTracks()),
+    ];
+    return tracks.some(t => t.readyState === 'live');
+  }
+
+  function showAudioLossBanner() {
+    const dead = [];
+    if (micTrackDead) dead.push('Microphone');
+    if (systemTrackDead) dead.push('System/screen audio (did you click "Stop sharing"?)');
+    extraStreams.filter(e => e.dead).forEach(e => dead.push(e.label));
+    if (!dead.length) { hideAudioLossBanner(); return; }
+
+    const full = !anyAudioTrackLive();
+    document.getElementById('audioLossMsg').textContent =
+      (full ? 'ALL AUDIO LOST — ' : 'Partial audio lost — ') + dead.join(', ') + ' stopped.' +
+      (full ? ' Transcription is paused until you reconnect.' : ' Still transcribing the remaining source(s).');
+    document.getElementById('audioLossBanner').classList.add('visible');
+    document.getElementById('statusDot').classList.add('alarmed');
+    document.getElementById('statusText').textContent = full ? 'Audio lost' : 'Partial audio lost';
+    startTitleFlash(full ? 'AUDIO LOST' : 'Partial audio lost');
+    beepAlert();
+  }
+
+  function hideAudioLossBanner() {
+    document.getElementById('audioLossBanner').classList.remove('visible');
+    document.getElementById('statusDot').classList.remove('alarmed');
+    stopTitleFlash();
+    if (isRecording) {
+      document.getElementById('statusText').textContent = asrState.value === 'reconnecting' ? 'Reconnecting...' : 'Recording';
+    }
+  }
+
+  const ORIGINAL_DOCUMENT_TITLE = document.title;
+  let titleFlashTimer = null;
+  function startTitleFlash(alarmText) {
+    if (titleFlashTimer) return; // already flashing
+    let toggle = false;
+    titleFlashTimer = setInterval(() => {
+      document.title = toggle ? ORIGINAL_DOCUMENT_TITLE : `⚠ ${alarmText}`;
+      toggle = !toggle;
+    }, 1000);
+  }
+  function stopTitleFlash() {
+    if (!titleFlashTimer) return;
+    clearInterval(titleFlashTimer);
+    titleFlashTimer = null;
+    document.title = ORIGINAL_DOCUMENT_TITLE;
+  }
+
+  // Short oscillator beep so the user notices even with the tab backgrounded.
+  // No external assets, per the no-deps constraint.
+  function beepAlert() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 880;
+      gain.gain.value = 0.15;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      setTimeout(() => { osc.stop(); ctx.close(); }, 300);
+    } catch (err) {
+      console.warn('beepAlert failed:', err.message);
+    }
+  }
+
+  // Re-acquires ONLY the dead source(s) and wires the new track(s) into the
+  // existing audio graph — no restart of the meeting/ASR session, no loss of
+  // transcript/summary state. Display-capture re-acquisition needs a user
+  // gesture; the button click supplies it. Guarded by asrEpoch so a Stop
+  // that races with this can't resurrect a graph that no longer exists.
+  async function reconnectDeadAudioSources() {
+    if (!audioCtx || !processorNode) { console.warn('reconnectDeadAudioSources: no live audio graph'); return; }
+    const epoch = asrEpoch;
+
+    if (micTrackDead) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (epoch !== asrEpoch) { s.getTracks().forEach(t => t.stop()); return; }
+        if (sourceNode) sourceNode.disconnect();
+        if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = s;
+        sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+        sourceNode.connect(micGainNode);
+        wireTrackEndedHandlers(mediaStream.getAudioTracks(), 'mic');
+        micTrackDead = false;
+      } catch (err) {
+        console.warn('Could not reconnect microphone:', err.message);
+      }
+    }
+
+    if (systemTrackDead) {
+      try {
+        const systemDeviceId = document.getElementById('systemAudioDevice').value;
+        const s = (systemDeviceId && systemDeviceId !== 'none' && systemDeviceId !== 'all')
+          ? await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: systemDeviceId } } })
+          : await captureSystemAudioViaSharePicker();
+        if (epoch !== asrEpoch) { if (s) s.getTracks().forEach(t => t.stop()); return; }
+        if (s && s.getAudioTracks().length) {
+          if (systemSourceNode) systemSourceNode.disconnect();
+          if (systemStream) systemStream.getTracks().forEach(t => t.stop());
+          systemStream = s;
+          systemSourceNode = audioCtx.createMediaStreamSource(systemStream);
+          systemSourceNode.connect(processorNode);
+          wireTrackEndedHandlers(systemStream.getAudioTracks(), 'system');
+          systemTrackDead = false;
+        }
+      } catch (err) {
+        console.warn('Could not reconnect system audio:', err.message);
+      }
+    }
+
+    for (const entry of extraStreams.filter(e => e.dead)) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: entry.deviceId } } });
+        if (epoch !== asrEpoch) { s.getTracks().forEach(t => t.stop()); return; }
+        if (entry.node) entry.node.disconnect();
+        entry.stream.getTracks().forEach(t => t.stop());
+        entry.stream = s;
+        entry.node = audioCtx.createMediaStreamSource(s);
+        entry.node.connect(processorNode);
+        wireTrackEndedHandlers(s.getAudioTracks(), 'extra', entry);
+        entry.dead = false;
+      } catch (err) {
+        console.warn('Could not reconnect extra device', entry.label, ':', err.message);
+      }
+    }
+
+    if (!micTrackDead && !systemTrackDead && !extraStreams.some(e => e.dead)) hideAudioLossBanner();
+    else showAudioLossBanner(); // refresh the message to reflect whatever's still dead
+  }
+
+  document.getElementById('audioLossReconnectBtn').addEventListener('click', () => {
+    reconnectDeadAudioSources().catch(err => {
+      console.error('reconnectDeadAudioSources failed:', err);
+      flashStatusError('Reconnect audio failed — see console');
+    });
+  });
 
   function addFinalSegment(text) {
     const panel = document.getElementById('transcriptPanel');

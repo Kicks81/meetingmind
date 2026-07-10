@@ -238,3 +238,12 @@ never silently delete an item — strike it through with a reason.
   search, export buttons, and controls) no longer overflow or clip at standard window sizes.
   Adjusted flexbox wrapping and spacing to keep all controls visible and accessible.
   (commit `U12:`)
+- [x] **U13. Silent-death protection: detect ended audio tracks and surface recovery UI.**
+  Audio capture devices can silently die mid-meeting (driver crash, USB disconnect, system
+  suspend/resume), leaving the app recording but with no mic data reaching the ASR. Added
+  watchdog that monitors for silence (no audio samples written to BytePlus within a timeout
+  window) and surfaces a loud, dismissible recovery UI when detected, not a quiet console
+  warning. User can retry (attempts mic permission and re-opens the audio graph) or accept
+  the gap and continue with existing ASR connection. Extracted `hasAudioFlowed` state tracking
+  and `notifyAudioLoss` alert mechanism to core.js. Verified: manual test with headphone cable
+  disconnect during recording. (commit `U13:`)
