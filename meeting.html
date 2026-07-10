@@ -496,6 +496,7 @@
     <input class="api-input" style="width:200px;" type="text" id="hotwords" placeholder="Hotwords: Swetha, Kai, AFO, ..." title="Comma-separated names/jargon to help the ASR recognise them correctly">
     <button class="btn btn-start" id="recordBtn" onclick="toggleRecording()">Start Meeting</button>
     <button class="btn btn-clear" onclick="addToObsidian()">Add to Obsidian</button>
+    <span id="exportLog" style="font-size:11px;opacity:.75;align-self:center;" title=""></span>
     <button class="btn btn-clear" onclick="saveConfig()" title="Save keys/settings to a file on disk">Save Config</button>
     <button class="btn btn-clear" onclick="document.getElementById('configFileInput').click()" title="Load keys/settings from a saved file">Load Config</button>
     <input type="file" id="configFileInput" accept="application/json" style="display:none" onchange="loadConfig(event)">
@@ -695,7 +696,8 @@
       trimmedSegmentCount: 0, // set by autosave() if quota trimming kicks in
       meetingContext, finalTranscript, pendingText,
       counters: { segmentCount, summaryCount, qaCount, totalWords, actionCount },
-      obsidian: { notePath: obsidianNotePath, title: obsidianMeetingTitle, chunk: obsidianChunkNumber }
+      obsidian: { notePath: obsidianNotePath, title: obsidianMeetingTitle, chunk: obsidianChunkNumber },
+      exportLedger // small (one entry per chunk sent, not per segment) — never trimmed, see D3
     };
   }
 
@@ -840,6 +842,8 @@
     obsidianNotePath = snap.obsidian.notePath;
     obsidianMeetingTitle = snap.obsidian.title;
     obsidianChunkNumber = snap.obsidian.chunk || 1;
+    exportLedger = Array.isArray(snap.exportLedger) ? snap.exportLedger : [];
+    updateExportLogUI();
 
     document.getElementById('segCount').textContent = segmentCount;
     document.getElementById('summaryCount').textContent = summaryCount;
@@ -2107,6 +2111,8 @@
     obsidianNotePath = null;
     obsidianMeetingTitle = null;
     obsidianChunkNumber = 1;
+    exportLedger = [];
+    updateExportLogUI();
     document.getElementById('segCount').textContent = '0';
     document.getElementById('summaryCount').textContent = '0';
     document.getElementById('qaCount').textContent = '0';
@@ -2162,6 +2168,18 @@
   let obsidianMeetingTitle = null; // generated once, reused for the note title/filename
   let obsidianChunkNumber = 1;     // chronological chunk label *within* the single note
 
+  // ── Export ledger (D3) ─────────────────────────────────────────────────
+  // The obsidian:// hand-off is fire-and-forget with only an optimistic
+  // `exported` flag per element — if Obsidian silently drops a chunk (wrong
+  // vault name, app not running, etc.) there was previously no record that
+  // it was even attempted. Keep one small entry per chunk actually sent —
+  // {chunkNumber, notePath, timeStr, charCount, sentAt} — so the user can
+  // compare "chunks sent" against what's actually in the vault. This array
+  // is tiny (one entry per export, not per transcript segment) so it is
+  // NEVER subject to the autosave byte-budget trim (D1) — see
+  // trimSnapshotToByteBudget in core.js, which only ever touches segments.
+  let exportLedger = [];
+
   function unexportedObsidianElements() {
     const transcriptEls = [...document.querySelectorAll('#transcriptPanel .transcript-segment.final')].filter(el => !el.dataset.obsidianExported);
     const summaryEls = [...document.querySelectorAll('#summaryPanel .summary-block')].filter(el => !el.dataset.obsidianExported);
@@ -2216,7 +2234,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       ? `---\ntitle: ${obsidianMeetingTitle}\ndate: ${dateStr}\ntags: [meeting, meetingmind]\n---\n\n# ${obsidianMeetingTitle}\n${dateStr} ${timeStr}\n\n${chunkBody}`
       : `\n\n${chunkBody}`; // appended chunks skip frontmatter/title — those only belong at the top of the file
 
-    return { notePath, md, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls] };
+    return { notePath, md, timeStr, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls] };
   }
 
   function downloadMarkdownFile(notePath, md) {
@@ -2282,9 +2300,29 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
 
     // Commit export state only now that the chunk actually went somewhere.
     obsidianNotePath = chunk.notePath;
+    exportLedger.push({
+      chunkNumber: obsidianChunkNumber,
+      notePath: chunk.notePath,
+      timeStr: chunk.timeStr,
+      charCount: chunk.md.length,
+      sentAt: Date.now()
+    });
     obsidianChunkNumber++;
     chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; invalidateSnap(el); });
+    updateExportLogUI();
     return true;
+  }
+
+  // Small "Export log" line next to the Obsidian button so a dropped chunk
+  // (Obsidian not running, wrong vault name, etc.) is visible at a glance
+  // instead of only discoverable by opening the vault and counting sections.
+  function updateExportLogUI() {
+    const el = document.getElementById('exportLog');
+    if (!el) return;
+    if (!exportLedger.length) { el.textContent = ''; el.title = ''; return; }
+    const last = exportLedger[exportLedger.length - 1];
+    el.textContent = `Export log: ${exportLedger.length} chunk(s) sent, last at ${last.timeStr}`;
+    el.title = exportLedger.map(e => `#${e.chunkNumber} → ${e.notePath} @ ${e.timeStr} (${e.charCount} chars)`).join('\n');
   }
 
   // Drains everything un-exported as a series of URI-sized appends. The

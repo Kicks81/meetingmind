@@ -234,6 +234,25 @@ and old snapshots rejected or migrated gracefully. Both functions are pure,
 deterministic, and fully eval-covered (en/zh/mixed text, various tag/attribute
 forms, edge cases like non-string input, unclosed tags, null snapshots).
 
+### D20. Export ledger — traceable chunk history (2026-07-10)
+Obsidian export via URIs (D5) is fire-and-forget: the app sends a chunk and
+sets an optimistic "exported" flag, but receives **no acknowledgement** from
+Obsidian. If the app sent to the wrong vault name or Obsidian wasn't running,
+the chunk is silently lost and only discovered later by opening the vault and
+noticing a gap. To make failures visible at export time, maintain a small
+**export ledger**: one entry per chunk successfully handed off to the obsidian://
+URI. Each entry logs: chunkNumber, notePath, timestamp, char count, sentAt epoch.
+
+**Why a separate ledger, not just the export flags?** The exported flags mark
+*which elements* went out; the ledger marks *what content* was sent and *when*,
+so the user can compare "we sent 3 chunks at these times" against what's in the
+vault. The ledger is small (grows linearly with chunks, not segments) and is
+**NEVER trimmed by autosave quota** (D1 trims only segments). Export log UI
+next to the Obsidian button shows count + last-sent timestamp; hover for full
+details (all chunks). Persists through restore so history survives a crash.
+Added to snapshot schema validation (D19: validateAutosaveSnapshot checks that
+exportLedger is an array if present, allowing future forward compatibility).
+
 ### D17. Q&A panel split layout and action-item dismissal (2026-07-10)
 The Q&A panel is split into two independently-scrolling halves (top: Q&A,
 bottom: Action Required) so long meetings don't starve the action list at the

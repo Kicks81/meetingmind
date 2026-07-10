@@ -30,6 +30,14 @@ never silently delete an item — strike it through with a reason.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
+- [x] **D3. Obsidian export ledger — chunks are traceable and recoverable.**
+  Each export chunk is logged with: chunkNumber, notePath, timestamp, char count, and sentAt.
+  The ledger is small (one entry per chunk sent) and **never trimmed by autosave quota**
+  (D1 trims only transcript segments, not export metadata). Export log UI next to the Obsidian
+  button shows count + last chunk timestamp; hover for full chunk details. Persists through
+  restore, making it obvious when Obsidian silently dropped a chunk (wrong vault name, app
+  not running, network glitch) instead of export being fire-and-forget with no visibility.
+  Validation: exportLedger array schema check in validateAutosaveSnapshot. (commit `D3:`)
 - [x] **D2. Restore hardening — schema validation and HTML sanitization on autosave restore.**
   Snapshots are validated before any DOM is cleared (validates schema version, presence/type of
   all required fields via `validateAutosaveSnapshot`). Summary/Q&A HTML is sanitized before

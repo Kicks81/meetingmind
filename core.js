@@ -336,6 +336,7 @@
     if (!Array.isArray(snap.summaries)) return false;
     if (!Array.isArray(snap.qas)) return false;
     if (snap.actions !== undefined && !Array.isArray(snap.actions)) return false;
+    if (snap.exportLedger !== undefined && !Array.isArray(snap.exportLedger)) return false;
     if (!snap.counters || typeof snap.counters !== 'object') return false;
     if (!snap.obsidian || typeof snap.obsidian !== 'object') return false;
     return true;
