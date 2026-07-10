@@ -109,10 +109,45 @@
     animation: pulse 1.5s infinite;
   }
 
+  /* U13: silent-death protection — loud alarmed state when a captured
+     audio track ends unexpectedly (e.g. "Stop sharing" was clicked). */
+  .status-dot.alarmed {
+    background: #da3633;
+    box-shadow: 0 0 6px #da3633;
+    animation: pulse 0.6s infinite;
+  }
+
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
   }
+
+  .audio-loss-banner {
+    display: none;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 20px;
+    background: #da3633;
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .audio-loss-banner.visible { display: flex; }
+
+  .audio-loss-banner button {
+    background: #fff;
+    color: #da3633;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .audio-loss-banner button:hover { background: #ffdcdc; }
 
   .main {
     display: grid;
@@ -135,7 +170,6 @@
   .panel:last-child { border-right: none; }
 
   .panel-header {
-    white-space: nowrap; /* keep titles like "Live Transcription" on one line */
     padding: 12px 14px;
     background: #161b22;
     border-bottom: 1px solid #30363d;
@@ -146,9 +180,26 @@
     color: #8b949e;
     display: flex;
     align-items: center;
+    flex-wrap: wrap; /* U12: never clip controls — wrap to a 2nd line instead */
+    row-gap: 6px;
     gap: 8px;
     flex-shrink: 0;
   }
+
+  /* U12: title text itself stays on one line (D11/U4b) even though the row
+     as a whole may wrap; only the title span needs this, not the controls. */
+  .panel-header > span:first-child { white-space: nowrap; }
+
+  /* U12: device/model selects shrink before buttons do, truncating their
+     own text with an ellipsis rather than pushing buttons off-panel. */
+  .panel-header select.model-select {
+    min-width: 0;
+    flex-shrink: 1;
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
+
+  .panel-header .btn { flex-shrink: 0; }
 
   .panel-badge {
     background: #21262d;
@@ -504,19 +555,27 @@
   </div>
 </header>
 
+<!-- U13: silent-death protection banner — appears when a captured audio
+     track ends unexpectedly (screen-share "Stop sharing", revoked mic
+     permission, unplugged device) while the meeting is recording. -->
+<div id="audioLossBanner" class="audio-loss-banner">
+  <span id="audioLossMsg"></span>
+  <button id="audioLossReconnectBtn" type="button">Reconnect audio</button>
+</div>
+
 <div class="main">
   <!-- Transcription Panel -->
   <div class="panel">
     <div class="panel-header">
       <span>&#127908;</span> Live Transcription
-      <select class="model-select" id="systemAudioDevice" style="font-size:11px;max-width:150px;">
+      <select class="model-select" id="systemAudioDevice" style="font-size:11px;max-width:150px;flex-basis:80px;">
         <option value="all">All sources (every device + system)</option>
         <option value="none">System audio: share picker</option>
       </select>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="refreshAudioDevices()">&#128257;</button>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="manageDictionary()" title="Correction dictionary — select mis-heard text in the transcript and click ✏️ Fix to teach it the right term">&#128214; <span id="dictCount">0</span></button>
       <button class="btn btn-clear" style="padding:2px 8px;font-size:11px;" onclick="cleanSmallTalk()" title="AI-remove small talk (greetings, chit-chat, filler) from the transcript — only segments not yet exported to Obsidian">&#129529;</button>
-      <button class="btn btn-clear" id="micToggle" style="padding:2px 8px;font-size:11px;" onclick="toggleMic()" title="Mute/unmute YOUR microphone in the transcription mix — mute it when you're only listening, so surrounding office noise isn't transcribed. Other sources (Teams/system audio) keep flowing.">&#127897;&#65039; on</button>
+      <button class="btn btn-clear" id="micToggle" style="padding:2px 8px;font-size:11px;min-width:64px;text-align:center;" onclick="toggleMic()" title="Mute/unmute YOUR microphone in the transcription mix — mute it when you're only listening, so surrounding office noise isn't transcribed. Other sources (Teams/system audio) keep flowing.">&#127897;&#65039; on</button>
       <span class="panel-badge" id="segCount">0</span>
     </div>
     <div class="panel-body" id="transcriptPanel">
@@ -965,8 +1024,15 @@
   let finalizedUtteranceCount = 0;
   let interimEl = null;
   let asrReady = false; // true only while a BytePlus session is accepting audio
+  // Each entry: { stream, node, deviceId, label, dead }. Kept as objects
+  // (not bare MediaStreams) so U13 can reconnect a single dead device in
+  // place — deviceId + node are needed to reacquire and rewire just that one.
   let extraStreams = [];      // additional input devices in "all sources" mode
-  let extraSourceNodes = [];
+  // U13: per-source "did this track end unexpectedly" flags, used to drive
+  // the loud recovery banner/alarmed status dot without touching asrState
+  // (D23) — this is an orthogonal audio-graph concern, not an ASR-connection one.
+  let micTrackDead = false;
+  let systemTrackDead = false;
   let micGainNode = null;     // gates the mic into the mix (mute = gain 0)
   let micEnabled = true;
   let lastAsrFrameAt = 0;     // watchdog: when BytePlus last sent us anything

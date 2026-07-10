@@ -233,3 +233,8 @@ never silently delete an item — strike it through with a reason.
   from similar speech. Core.parseActionList/actionKey (pure, eval-covered) parse/dedupe
   actions. Final synthesis uses the curated list verbatim, never re-derives, so false
   positives deleted by the user don't reappear in the exported note. (commit `U11:`)
+- [x] **U12. Transcript panel header buttons truncated/clipped at normal window widths.**
+  Fixed CSS layout so the transcript panel header (record/stop, mic/speaker toggles, 🧹 cleanup,
+  search, export buttons, and controls) no longer overflow or clip at standard window sizes.
+  Adjusted flexbox wrapping and spacing to keep all controls visible and accessible.
+  (commit `U12:`)
