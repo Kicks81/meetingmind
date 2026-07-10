@@ -18,8 +18,26 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = process.argv[2] ? parseInt(process.argv[2], 10) : 8765;
+// Args: node relay.js [port] [--host <host>]. --host defaults to 127.0.0.1
+// (localhost-only); pass --host 0.0.0.0 to opt into LAN access.
+const rawArgs = process.argv.slice(2);
+let HOST = '127.0.0.1';
+const positional = [];
+for (let i = 0; i < rawArgs.length; i++) {
+  if (rawArgs[i] === '--host') {
+    HOST = rawArgs[i + 1] || HOST;
+    i++;
+  } else {
+    positional.push(rawArgs[i]);
+  }
+}
+const PORT = positional[0] ? parseInt(positional[0], 10) : 8765;
 const UPSTREAM_BASE = 'wss://voice.ap-southeast-1.bytepluses.com/api/v3/sauc';
+const BACKPRESSURE_BYTES = 1024 * 1024; // 1MB — visibility only, no throttling.
+
+let connCounter = 0;
+function ts() { return new Date().toISOString(); }
+function log(id, msg) { console.log(`[${ts()}] [${id}] ${msg}`); }
 
 // Serve the app itself over http://localhost so Chrome PERSISTS mic
 // permissions ("Allow while visiting the site") — file:// pages get
@@ -44,14 +62,54 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
-const wss = new WebSocketServer({ server: httpServer });
-httpServer.listen(PORT, () => {
-  console.log(`MeetingMind running at http://localhost:${PORT} (ASR relay on the same port)`);
+const wss = new WebSocketServer({ noServer: true });
+
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} already in use — is another relay running? Close it or pass a different port: node relay.js ${PORT + 1}`);
+    process.exit(1);
+  }
+  console.error('Server error:', err.message);
+  process.exit(1);
 });
 
-wss.on('connection', (client) => {
+httpServer.listen(PORT, HOST, () => {
+  console.log(`MeetingMind running at http://${HOST}:${PORT} (ASR relay on the same port)`);
+});
+
+// Origin check on upgrade: reject browser connections from any origin other
+// than this same host:port. Non-browser clients (no Origin header) are
+// allowed through — this is a same-origin check, not an auth mechanism.
+const ALLOWED_ORIGINS = new Set([
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+]);
+
+httpServer.on('upgrade', (req, socket, head) => {
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
+
+wss.on('connection', (client, req) => {
+  const id = `c${++connCounter}`;
+  log(id, `client connected (origin=${req.headers.origin || 'none'})`);
   let upstream = null;
   let initialized = false;
+
+  const bpTimer = setInterval(() => {
+    const clientBuf = client.bufferedAmount || 0;
+    const upstreamBuf = upstream ? (upstream.bufferedAmount || 0) : 0;
+    if (clientBuf > BACKPRESSURE_BYTES || upstreamBuf > BACKPRESSURE_BYTES) {
+      log(id, `WARNING backpressure — client.bufferedAmount=${clientBuf} upstream.bufferedAmount=${upstreamBuf}`);
+    }
+  }, 5000);
 
   client.on('message', (data, isBinary) => {
     if (!initialized) {
@@ -89,7 +147,7 @@ wss.on('connection', (client) => {
       });
 
       upstream.on('open', () => {
-        console.log(`Upstream connected (mode=${mode}, resourceId=${resourceId})`);
+        log(id, `upstream open (mode=${mode}, resourceId=${resourceId})`);
         client.send(JSON.stringify({ type: 'ready' }));
       });
 
@@ -98,6 +156,7 @@ wss.on('connection', (client) => {
       });
 
       upstream.on('close', (code, reason) => {
+        log(id, `upstream closed (code=${code} reason=${reason || ''})`);
         if (client.readyState === WebSocket.OPEN) {
           client.close(1000, `upstream closed (${code} ${reason})`);
         }
@@ -113,7 +172,7 @@ wss.on('connection', (client) => {
         res.on('data', (chunk) => { body += chunk; });
         res.on('end', () => {
           const detail = `HTTP ${res.statusCode} ${res.statusMessage || ''} — ${body || '(empty body)'} — logid: ${res.headers['x-tt-logid'] || 'n/a'}`;
-          console.error('Upstream handshake rejected:', detail);
+          log(id, `upstream handshake rejected: ${detail}`);
           if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify({ type: 'error', message: detail }));
             client.close(1011, 'upstream handshake rejected');
@@ -122,7 +181,7 @@ wss.on('connection', (client) => {
       });
 
       upstream.on('error', (err) => {
-        console.error('Upstream error:', err.message);
+        log(id, `upstream error: ${err.message}`);
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'error', message: err.message }));
           client.close(1011, 'upstream error');
@@ -140,10 +199,13 @@ wss.on('connection', (client) => {
   });
 
   client.on('close', () => {
+    clearInterval(bpTimer);
+    log(id, 'client disconnected');
     if (upstream) upstream.close();
   });
 
-  client.on('error', () => {
+  client.on('error', (err) => {
+    log(id, `client error: ${err.message}`);
     if (upstream) upstream.close();
   });
 });

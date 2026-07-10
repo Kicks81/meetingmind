@@ -16,8 +16,6 @@ never silently delete an item — strike it through with a reason.
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
 
 ## P3 — Engineering health
-- [ ] **L2. Key hygiene.** Warn that Save Config writes keys in plaintext; consider
-  encrypting the config export with a passphrase.
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
 
 ## Done
@@ -247,3 +245,18 @@ never silently delete an item — strike it through with a reason.
   the gap and continue with existing ASR connection. Extracted `hasAudioFlowed` state tracking
   and `notifyAudioLoss` alert mechanism to core.js. Verified: manual test with headphone cable
   disconnect during recording. (commit `U13:`)
+- [x] **E1. Relay hardening — localhost-only, port-conflict handling, backpressure visibility, useful logs.**
+  Hardened relay.js to bind only to localhost (127.0.0.1) for security (prevents network-accessible
+  relay from leaking BytePlus keys or proxying to other machines), implemented port-conflict detection
+  with automatic fallback or user-visible error, added backpressure monitoring (`socket.bufferedAmount`)
+  to detect when browser audio frames are queueing faster than the relay can drain them (early warning
+  for network/ASR slowness), and improved logging with request/response counts, relay uptime, and frame
+  sizes. See DEVELOPMENT.md D25 for architectural rationale. (commit `E1:`)
+- [x] **L2. Key hygiene — config export encryption with user-supplied passphrase.**
+  Save Config now optionally encrypts the exported JSON with a user-supplied passphrase using
+  `crypto.subtle.encrypt` (AES-GCM), producing a self-contained encrypted artifact with embedded
+  IV/salt. Load Config detects encryption via magic header and prompts for the passphrase to decrypt.
+  This mitigates risk if the .json export file is checked into git or forwarded insecurely. Encryption is
+  optional (user can choose plaintext); plaintext configs remain unencrypted for backward compatibility.
+  See DEVELOPMENT.md D26 for format details. This was the E3 enhancement request; moving L2 here
+  as complete. (commit `E3:`)

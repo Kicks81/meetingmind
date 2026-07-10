@@ -407,6 +407,66 @@ instead of "check the console logs").
 - Evals cover core.js logic + a few DOM-wiring greps; audio/ASR paths need a live
   BytePlus key and are manually tested only.
 
+### D25. Relay localhost-only binding (E1, completed 2026-07-10)
+Hardened relay.js to bind exclusively to `127.0.0.1` (not `0.0.0.0`) to prevent
+network exposure of the BytePlus ASR proxy. **Why this matters:** The relay holds
+the user's BytePlus API key (set via command-line env var `BYTEPLUS_KEY`) and forwards
+opaque frames to/from the ASR service (D2). If the relay were reachable from other
+machines on the network, a compromised peer could intercept frames, extract metadata,
+or proxy malicious requests. Localhost-only binding (enforced at both the HTTP server
+and WebSocket listener) ensures only the local Chrome browser can reach it.
+
+Also implemented:
+1. **Port-conflict detection**: If the default port (8765) is already in use, the relay
+   tries the next available port in a range, or fails with a clear error message (not
+   silent degradation). start.bat logs the actual port so the user can navigate to the
+   correct localhost URL.
+2. **Backpressure visibility**: Logs `socket.bufferedAmount` (bytes queued in the browser's
+   send buffer) every 5s while recording. If it grows unbounded, it signals that the relay
+   or network is slower than audio frame generation — an early warning for the ~1hr delay
+   investigation (D13) or provider-side rate limits.
+3. **Useful logging**: Request counts (frames in/out), relay uptime, frame sizes (min/max/avg),
+   and error rates. These are emitted to stdout for live debugging without code changes.
+
+### D26. Config export encryption with user-supplied passphrase (E3, completed 2026-07-10)
+Save Config now offers optional encryption of the exported JSON file. **Why this matters:**
+Keys (BytePlus, OpenRouter) are persisted in localStorage, and users can export this config
+to a file (Save Config button) for backup or transfer between machines. If that file is
+checked into git, shared in a Slack message, or left on a shared computer, the keys are
+plaintext and compromised. Encryption with a user-supplied passphrase mitigates this.
+
+**Format:**
+- **Plaintext export** (user opt-in for encryption = unchecked): standard JSON, backward
+  compatible with existing Load Config workflows.
+- **Encrypted export** (user checks "Encrypt with passphrase"): prompt for a passphrase,
+  derive a key using `crypto.subtle.deriveBits` (PBKDF2, 100k iterations, random salt),
+  and encrypt the JSON using `AES-GCM`. The output file contains:
+  ```
+  {
+    "enc": "1",             // magic header: this is encrypted
+    "v": "1",               // encryption format version
+    "salt": "<base64>",     // random salt for PBKDF2 (16 bytes)
+    "iv": "<base64>",       // IV for AES-GCM (12 bytes)
+    "tag": "<base64>",      // authentication tag (16 bytes)
+    "data": "<base64>"      // encrypted config JSON
+  }
+  ```
+- **Load Config** detects the `"enc"` header, prompts for the passphrase, derives the
+  same key (salt is embedded), and decrypts. Mismatched passphrases result in auth-tag
+  failure and a clear "wrong passphrase" error.
+
+**Design notes:**
+1. **Optional, not mandatory**: Existing plaintext workflows remain supported; this is
+   a user opt-in to trade convenience for security.
+2. **No key rotation**: Passphrases are not stored; re-encryption always asks for
+   passphrase again. Users can migrate by exporting plaintext → re-entering keys → exporting
+   encrypted with new passphrase.
+3. **Scoped to export/import only**: localStorage still holds plaintext (D9 is unchanged);
+   encryption is only for file durability. Full localStorage encryption (backlog item) is
+   out of scope here.
+4. **Constants hardcoded**: PBKDF2 iterations (100k, matches OWASP recommendations),
+   salt/IV sizes (16/12 bytes, standard for GCM), AES-256-GCM algorithm.
+
 ## 5. How to keep improving
 Run the loop: pick the top of [BACKLOG.md](BACKLOG.md) → implement → verify
 (`node evals/run.mjs` + browser check; add zh/en/mixed fixtures for any text-logic
