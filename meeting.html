@@ -599,10 +599,13 @@
     <span id="statusDot" class="status-dot"></span>
     <span id="statusText" style="font-size:13px;color:#8b949e;">Ready</span>
     <select class="model-select" id="modelSelect">
+      <!-- First option is the default for a fresh browser; the choice is then
+           remembered via PERSISTED_FIELDS.modelSelect. Pinned to a dated build
+           rather than a floating alias so summaries stay reproducible. -->
+      <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 (zh-native, default)</option>
       <option value="openai/gpt-4o-mini">GPT-4o Mini (fast)</option>
       <option value="openai/gpt-4o">GPT-4o</option>
-      <option value="deepseek/deepseek-v4-flash-0731">DeepSeek V4 Flash 0731 (zh-native, pinned)</option>
-      <option value="deepseek/deepseek-v4-flash">DeepSeek V4 Flash (zh-native, fast)</option>
+      <option value="deepseek/deepseek-v4-flash">DeepSeek V4 Flash (latest alias)</option>
       <option value="deepseek/deepseek-v4-pro">DeepSeek V4 Pro (zh-native)</option>
       <!-- ids below verified against https://openrouter.ai/api/v1/models on
            2026-08-02. claude-haiku-4-5 and gemini-flash-1.5 were wrong (dash vs
@@ -3487,6 +3490,10 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
 
   // ── Persist API keys / relay URL locally (this browser only) ────────────
   const PERSISTED_FIELDS = {
+    // Was absent, so the model silently reverted to the first option on every
+    // reload — a meeting could be summarised by a different model than the one
+    // the user thought they picked.
+    modelSelect: 'meetingmind_model',
     apiKey: 'meetingmind_openrouter_key',
     bytePlusKey: 'meetingmind_byteplus_key',
     relayUrl: 'meetingmind_relay_url',
