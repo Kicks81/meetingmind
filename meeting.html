@@ -1729,7 +1729,10 @@
     if (!block) {
       block = document.createElement('div');
       block.className = 'summary-block consolidated';
-      block.innerHTML = '<div class="summary-label">CONSOLIDATED &mdash; grouped &amp; deduplicated</div><div class="summary-text"></div>';
+      // Placeholder text, not an empty div: the block is pinned above the
+      // rolling summaries before the stream starts, and on a slow or stalled
+      // API an empty pinned box reads as a rendering bug.
+      block.innerHTML = '<div class="summary-label">CONSOLIDATED &mdash; grouped &amp; deduplicated</div><div class="summary-text" style="opacity:.6;">Consolidating&hellip;</div>';
       panel.insertBefore(block, panel.firstChild);
     }
     const textEl = block.querySelector('.summary-text');
@@ -1757,6 +1760,7 @@
 
     const out = await streamIntoElement(textEl, messages, 900);
     if (out && out.trim()) {
+      textEl.style.opacity = '';
       textEl.innerHTML = formatSummaryHtml(out);
     } else {
       textEl.innerHTML = previous;
@@ -3157,7 +3161,20 @@
       return `**${el.querySelector('.transcript-time').textContent}**${speaker} — ${el.querySelector('.seg-text').textContent}`;
     });
     const summaryBlocks = summaryEls.map(el => `${el.querySelector('.summary-label').textContent}:\n${el.querySelector('.summary-text').textContent}`);
-    const qaBlocks = qaEls.map(el => `**Q:** ${el.querySelector('.qa-question').textContent}\n**A:** ${el.querySelector('.qa-answer').textContent}`);
+    // Role-lens suggestions must NOT be exported as "**Q:**". Nobody asked
+    // them — writing them into the note in the same shape as real questions
+    // makes them read, weeks later, as things that were actually said. That is
+    // fabricated meeting content, which this app must never produce. They are
+    // still worth keeping (they are the questions worth following up on), so
+    // they export under an unambiguous label instead.
+    const qaBlocks = qaEls.map(el => {
+      const q = el.querySelector('.qa-question').textContent;
+      if (el.dataset.suggested) {
+        const role = el.dataset.roleShort ? ` — ${el.dataset.roleShort} lens` : '';
+        return `**Suggested question (not asked in the meeting)${role}:** ${q}`;
+      }
+      return `**Q:** ${q}\n**A:** ${el.querySelector('.qa-answer').textContent}`;
+    });
 
     const chunkBody = `## Segment ${obsidianChunkNumber} — ${timeStr}
 ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}${transcriptLines.length ? `\n**Transcript**\n${transcriptLines.join('\n\n')}\n` : ''}${qaBlocks.length ? `\n**Q&A**\n${qaBlocks.join('\n\n')}\n` : ''}`;

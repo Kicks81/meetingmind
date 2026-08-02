@@ -56,7 +56,11 @@
   // absent tags fall back to role:null, which renders in the neutral colour
   // with the question text intact.
   function parseSuggestedQuestion(line, validKeys) {
-    const text = String(line == null ? '' : line).replace(/^\s*[-*•]\s*/, '').trim();
+    // A zh-locale model asked for "- [role] …" often answers with a CJK list
+    // marker instead (・ · ． 、 　), and an unstripped marker rides along into
+    // the question text. \s does not cover U+3000 in all engines, so it is
+    // listed explicitly.
+    const text = String(line == null ? '' : line).replace(/^[\s　]*[-*•·・．、]?[\s　]*/, '').trim();
     const m = text.match(/^\[([^\]]{1,32})\]\s*(.+)$/);
     if (!m) return { role: null, question: text };
     const key = m[1].trim().toLowerCase();

@@ -138,6 +138,17 @@ check('bullet variants are stripped',
   core.parseSuggestedQuestion('• [engineer] What is the data shape?', RK).question,
   'What is the data shape?');
 
+// zh-locale models substitute CJK list markers for the requested "- ".
+for (const marker of ['・', '·', '．', '、', '　']) {
+  check(`zh: CJK list marker "${marker}" is stripped`,
+    core.parseSuggestedQuestion(`${marker}[finance] 这个的成本谁批准？`, RK),
+    { role: 'finance', question: '这个的成本谁批准？' });
+}
+
+check('zh: no marker at all still parses',
+  core.parseSuggestedQuestion('[pm] 谁负责这个？', RK),
+  { role: 'pm', question: '谁负责这个？' });
+
 // ── parseActionList / actionKey (U11 action items) ─────────────────────────
 check('en: parses bulleted action list',
   core.parseActionList('- I will send the report by Friday\n- Please follow up with the client'),
