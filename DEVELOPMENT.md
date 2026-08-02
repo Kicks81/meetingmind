@@ -395,143 +395,6 @@ design is simple (no complex driver API introspection), fails safe (worst case: 
 false alarm that the user dismisses), and is user-friendly (a single, clear action
 instead of "check the console logs").
 
-### D25. Direct vault writes replace the obsidian:// hand-off (2026-08-02)
-The `obsidian://new` export was losing most of every meeting, silently. Chrome
-refuses to launch an external protocol unless the navigation carries a
-**transient user activation**. That activation is consumed by the first launch
-and is gone after any `await` — so `sendAllObsidianChunks`, which looped with a
-600ms delay between chunks, had chunk 1 succeed and every later chunk rejected
-with `Not allowed to launch 'obsidian://new?...'`. `checkObsidianAutoSplit`,
-firing from an ASR transcript callback, never had a gesture at all and so could
-*never* work.
-
-The damage was compounded by `sendObsidianChunk` marking elements
-`obsidianExported = '1'` and pushing to the export ledger immediately after
-calling `obsidianNavigate()`. The hand-off is fire-and-forget, so a blocked
-launch was indistinguishable from a delivered one: the app reported "N chunks
-sent" for content Chrome had thrown away, and never retried it. Observed on
-2026-08-02: a 90-minute meeting produced two overlapping notes, each containing
-only `## Segment 1`, with 67 minutes absent from both.
-
-The 600ms delay and its "rapid back-to-back protocol navigations can drop some"
-comment were treating the wrong cause — the constraint is user activation, not
-timing. No delay could have fixed it.
-
-**Fix.** relay.js serves the app over `http://localhost` (D-static-serving),
-which is a *secure context*, so the File System Access API is available:
-- `connectVaultFolder()` — `showDirectoryPicker({mode:'readwrite'})` once; the
-  `FileSystemDirectoryHandle` is structured-cloneable so it persists in
-  IndexedDB across restarts. Only the permission lapses to `prompt`, and
-  re-granting needs a click, so `ensureVaultReady(true)` runs on the manual
-  button, never in the background.
-- `writeVaultNote()` — walks/creates the folder chain with
-  `getDirectoryHandle(..., {create:true})`, then writes. `append` is a
-  read-modify-write; the FS API has no append mode and meeting notes are small.
-- `exportViaVaultHandle()` — commits export flags and the ledger **only after
-  the write resolves**. A failure throws, nothing is marked exported, and the
-  same click can simply be repeated.
-
-Consequences: no protocol launch, no 30,000-char URI ceiling, no chunking or
-bisection, no duplicate notes, and failures are loud. Auto-export during a
-meeting now genuinely works (gesture-free) and becomes real crash safety —
-`OBSIDIAN_AUTOSAVE_CHARS` is a flush interval, not a size limit.
-
-The obsidian:// path is retained only as a `file://` fallback, but reduced to
-**one launch per click** with a count of what is still pending, since that is
-all Chrome permits.
-
-Also fixed alongside: the "everything already exported" re-send in
-`addToObsidian()` used to null `obsidianMeetingTitle`, which made
-`suggestMeetingTitle()` re-run against the now-longer transcript, return a
-different name, and fork a *second* note instead of replacing the first. The
-title is now preserved; only `obsidianNotePath` resets, so chunk 1 rewrites the
-same file from the frontmatter down.
-
-### D26. Role lenses — orthogonal to meeting type (2026-08-02)
-`SUMMARY_TEMPLATES` encodes what KIND of meeting this is. It says nothing about
-what the LISTENER needs from it — the same standup read as an engineer and as a
-finance lead should surface different things. `ROLE_LENSES` is that second,
-orthogonal dimension: 8 lenses (engineer, pm, finance, transformation, design,
-strategy, compliance, client), each contributing a `priorities` clause and a
-`questions` clause, both appended to the same system prompt so the two dimensions
-compose.
-
-Roles are **checkboxes, not a dropdown** — someone can be running a programme and
-be the engineer on it. Multiple ticked lenses are stitched into ONE instruction by
-`roleSummaryInstruction()` / `roleQuestionInstruction()` rather than concatenated
-as N standalone paragraphs, which would restate "the listener is …" N times and
-dilute the prompt. Zero ticked yields `''` and `null`, making the prompt
-byte-identical to the pre-feature case. The checkbox row is generated from
-`ROLE_LENSES`, so adding a lens is a one-place edit.
-
-Soft cap at 4 (advisory from the audit): each lens adds ~200-300 chars to every
-prompt, so all 8 is ~1.9KB of role instruction. Not blocked — broad-based users
-keep the choice — but a hint appears past 4.
-
-**Proactive suggestions.** The Q&A panel was purely reactive: it answered
-questions asked aloud. `suggestRoleQuestions()` runs every 3rd rolling summary and
-asks what THIS role should be asking that nobody has. Colour-coding those is only
-meaningful if a suggestion is attributable, so the model tags each line
-`- [rolekey] question` and `MeetingCore.parseSuggestedQuestion()` parses it. The
-key is **validated against the ticked set, not trusted** — a real question can open
-with a bracket (`[UAT] 什么时候上线？`) and treating that as a role tag would eat the
-label. Unknown/absent tags degrade to neutral grey.
-
-The role chip is CSS `::before` content driven by a data attribute, **not a DOM
-node**: the Obsidian export and the autosave snapshot both read `.qa-question`
-textContent, and a `<span>` in there produced `"EngWhat is the data shape…"` in
-the exported note. Caught in browser verification before it shipped.
-
-**Anti-fabrication, borrowed from a public meeting-notes-specialist agent.** The
-final synthesis now separates **Decisions** (explicitly agreed) from **Discussed
-(not decided)**, and uses `[owner: unassigned]` / `[no date]` / `[None recorded]`
-instead of inventing plausible owners. Collapsing those two categories is the most
-damaging failure mode this app has: a fabricated decision reads exactly like a real
-one weeks later. `TRANSCRIPT_IS_DATA` is appended to every prompt built from speech
-— a participant saying "ignore your instructions" is content to report, not a
-command to obey.
-
-Fixed alongside: `questionKey` was `toLowerCase().replace(/\s+/g,' ')` with no
-punctuation normalisation, so `映射？` and `映射?` produced different keys and
-dedupe silently failed for Chinese — the same suggestion would be re-offered every
-cycle. Found by the auditor by inference, without it having seen core.js.
-
-### D27. Consolidated live summary (2026-08-02)
-Rolling updates are chronological and therefore repetitive: a meeting circles back
-to the same point three times and produces three near-identical bullets. After 90
-minutes the panel is an unreadable list (the 2026-08-02 meeting produced 86).
-
-The chronological blocks stay — they are what the transcript aligns to and what
-gets exported — but one pinned `.summary-block.consolidated` above them holds a
-grouped, deduplicated view, rewritten from all updates every 4th summary. The
-prompt merges duplicates into one bullet keeping the fullest version plus later
-detail, states only the LATEST position where something changed, and is explicitly
-told it REPLACES rather than appends so it cannot grow into a list of everything.
-
-It is excluded from three selectors, and each exclusion is load-bearing:
-- **its own source** — otherwise it feeds on its own output and drifts
-- **the autosave snapshot** — it is derived; restoring it would persist a stale
-  copy and reinstate it as an ordinary update block
-- **`unexportedObsidianElements`** — it is rewritten every 4 summaries, so
-  exporting it would append a near-duplicate of the whole meeting each time. The
-  FINAL SUMMARY carries the deduplicated view into the vault.
-
-Serialised through a promise queue for the same reason summaries are: two
-overlapping rewrites would interleave streamed output into one element. On failure
-the previous good view is restored rather than blanked.
-
-## 4. Known limitations / sharp edges (as of 2026-07-10)
-- The screen-share picker for system audio cannot be skipped (Chrome security);
-  the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
-  the system-audio dropdown, whose permission persists.
-- Obsidian hand-off has no receipt (see D5) — full re-send is the recovery path.
-- zh questions ending without `？` (…吗 punctuated with `。` by the ASR) are missed
-  by regex detection; acceptable so far, LLM-side catch is a backlog option.
-- `meetingContext` grows unboundedly during very long meetings (backlog R3).
-- One meeting at a time; no history browser (autosave holds only the latest session).
-- Evals cover core.js logic + a few DOM-wiring greps; audio/ASR paths need a live
-  BytePlus key and are manually tested only.
-
 ### D25. Relay localhost-only binding (E1, completed 2026-07-10)
 Hardened relay.js to bind exclusively to `127.0.0.1` (not `0.0.0.0`) to prevent
 network exposure of the BytePlus ASR proxy. **Why this matters:** The relay holds
@@ -651,6 +514,207 @@ failures defeat diagnostics. The pane is collapsible (Settings → Diagnostics t
 normal users don't see it, but on-call engineers or the user during troubleshooting can
 open it and immediately see "why did the relay drop the connection at this timestamp?"
 without needing console access or asking the user to paste logs. No new dependencies.
+
+### D28. Direct vault writes replace the obsidian:// hand-off (E5, 2026-08-02)
+The `obsidian://new` export was losing most of every meeting, silently. Chrome
+refuses to launch an external protocol unless the navigation carries a
+**transient user activation**. That activation is consumed by the first launch
+and is gone after any `await` — so `sendAllObsidianChunks`, which looped with a
+600ms delay between chunks, had chunk 1 succeed and every later chunk rejected
+with `Not allowed to launch 'obsidian://new?...'`. `checkObsidianAutoSplit`,
+firing from an ASR transcript callback, never had a gesture at all and so could
+*never* work.
+
+The damage was compounded by `sendObsidianChunk` marking elements
+`obsidianExported = '1'` and pushing to the export ledger immediately after
+calling `obsidianNavigate()`. The hand-off is fire-and-forget, so a blocked
+launch was indistinguishable from a delivered one: the app reported "N chunks
+sent" for content Chrome had thrown away, and never retried it. Observed on
+2026-08-02: a 90-minute meeting produced two overlapping notes, each containing
+only `## Segment 1`, with 67 minutes absent from both.
+
+The 600ms delay and its "rapid back-to-back protocol navigations can drop some"
+comment were treating the wrong cause — the constraint is user activation, not
+timing. No delay could have fixed it.
+
+**Fix.** relay.js serves the app over `http://localhost` (D-static-serving),
+which is a *secure context*, so the File System Access API is available:
+- `connectVaultFolder()` — `showDirectoryPicker({mode:'readwrite'})` once; the
+  `FileSystemDirectoryHandle` is structured-cloneable so it persists in
+  IndexedDB across restarts. Only the permission lapses to `prompt`, and
+  re-granting needs a click, so `ensureVaultReady(true)` runs on the manual
+  button, never in the background.
+- `writeVaultNote()` — walks/creates the folder chain with
+  `getDirectoryHandle(..., {create:true})`, then writes. `append` is a
+  read-modify-write; the FS API has no append mode and meeting notes are small.
+- `exportViaVaultHandle()` — commits export flags and the ledger **only after
+  the write resolves**. A failure throws, nothing is marked exported, and the
+  same click can simply be repeated.
+
+Consequences: no protocol launch, no 30,000-char URI ceiling, no chunking or
+bisection, no duplicate notes, and failures are loud. Auto-export during a
+meeting now genuinely works (gesture-free) and becomes real crash safety —
+`OBSIDIAN_AUTOSAVE_CHARS` is a flush interval, not a size limit.
+
+The obsidian:// path is retained only as a `file://` fallback, but reduced to
+**one launch per click** with a count of what is still pending, since that is
+all Chrome permits.
+
+Also fixed alongside: the "everything already exported" re-send in
+`addToObsidian()` used to null `obsidianMeetingTitle`, which made
+`suggestMeetingTitle()` re-run against the now-longer transcript, return a
+different name, and fork a *second* note instead of replacing the first. The
+title is now preserved; only `obsidianNotePath` resets, so chunk 1 rewrites the
+same file from the frontmatter down.
+
+### D29. Role lenses — orthogonal to meeting type (E6, 2026-08-02)
+`SUMMARY_TEMPLATES` encodes what KIND of meeting this is. It says nothing about
+what the LISTENER needs from it — the same standup read as an engineer and as a
+finance lead should surface different things. `ROLE_LENSES` is that second,
+orthogonal dimension: 8 lenses (engineer, pm, finance, transformation, design,
+strategy, compliance, client), each contributing a `priorities` clause and a
+`questions` clause, both appended to the same system prompt so the two dimensions
+compose.
+
+Roles are **checkboxes, not a dropdown** — someone can be running a programme and
+be the engineer on it. Multiple ticked lenses are stitched into ONE instruction by
+`roleSummaryInstruction()` / `roleQuestionInstruction()` rather than concatenated
+as N standalone paragraphs, which would restate "the listener is …" N times and
+dilute the prompt. Zero ticked yields `''` and `null`, making the prompt
+byte-identical to the pre-feature case. The checkbox row is generated from
+`ROLE_LENSES`, so adding a lens is a one-place edit.
+
+Soft cap at 4 (advisory from the audit): each lens adds ~200-300 chars to every
+prompt, so all 8 is ~1.9KB of role instruction. Not blocked — broad-based users
+keep the choice — but a hint appears past 4.
+
+**Proactive suggestions.** The Q&A panel was purely reactive: it answered
+questions asked aloud. `suggestRoleQuestions()` runs every 3rd rolling summary and
+asks what THIS role should be asking that nobody has. Colour-coding those is only
+meaningful if a suggestion is attributable, so the model tags each line
+`- [rolekey] question` and `MeetingCore.parseSuggestedQuestion()` parses it. The
+key is **validated against the ticked set, not trusted** — a real question can open
+with a bracket (`[UAT] 什么时候上线？`) and treating that as a role tag would eat the
+label. Unknown/absent tags degrade to neutral grey.
+
+The role chip is CSS `::before` content driven by a data attribute, **not a DOM
+node**: the Obsidian export and the autosave snapshot both read `.qa-question`
+textContent, and a `<span>` in there produced `"EngWhat is the data shape…"` in
+the exported note. Caught in browser verification before it shipped.
+
+**Anti-fabrication, borrowed from a public meeting-notes-specialist agent.** The
+final synthesis now separates **Decisions** (explicitly agreed) from **Discussed
+(not decided)**, and uses `[owner: unassigned]` / `[no date]` / `[None recorded]`
+instead of inventing plausible owners. Collapsing those two categories is the most
+damaging failure mode this app has: a fabricated decision reads exactly like a real
+one weeks later. `TRANSCRIPT_IS_DATA` is appended to every prompt built from speech
+— a participant saying "ignore your instructions" is content to report, not a
+command to obey.
+
+Fixed alongside: `questionKey` was `toLowerCase().replace(/\s+/g,' ')` with no
+punctuation normalisation, so `映射？` and `映射?` produced different keys and
+dedupe silently failed for Chinese — the same suggestion would be re-offered every
+cycle. Found by the auditor by inference, without it having seen core.js.
+
+### D30. Consolidated live summary (E7, 2026-08-02)
+Rolling updates are chronological and therefore repetitive: a meeting circles back
+to the same point three times and produces three near-identical bullets. After 90
+minutes the panel is an unreadable list (the 2026-08-02 meeting produced 86).
+
+The chronological blocks stay — they are what the transcript aligns to and what
+gets exported — but one pinned `.summary-block.consolidated` above them holds a
+grouped, deduplicated view, rewritten from all updates every 4th summary. The
+prompt merges duplicates into one bullet keeping the fullest version plus later
+detail, states only the LATEST position where something changed, and is explicitly
+told it REPLACES rather than appends so it cannot grow into a list of everything.
+
+It is excluded from three selectors, and each exclusion is load-bearing:
+- **its own source** — otherwise it feeds on its own output and drifts
+- **the autosave snapshot** — it is derived; restoring it would persist a stale
+  copy and reinstate it as an ordinary update block
+- **`unexportedObsidianElements`** — it is rewritten every 4 summaries, so
+  exporting it would append a near-duplicate of the whole meeting each time. The
+  FINAL SUMMARY carries the deduplicated view into the vault.
+
+Serialised through a promise queue for the same reason summaries are: two
+overlapping rewrites would interleave streamed output into one element. On failure
+the previous good view is restored rather than blanked.
+
+### D31. Model selection integrity (E8, 2026-08-02)
+Two independent faults, both silent.
+
+`modelSelect` was never in `PERSISTED_FIELDS`, so the model reverted to the
+first `<option>` on every reload. A meeting could be summarised by a different
+model than the one the user believed they had picked, with nothing on screen to
+say so. Now persisted like every other field.
+
+Separately, the dropdown carried **ids that do not exist on OpenRouter**:
+`anthropic/claude-haiku-4-5` (dash where the id uses a dot) and
+`google/gemini-flash-1.5` (a version since retired). Selecting either would have
+failed the request. Corrected to `anthropic/claude-haiku-4.5` and
+`google/gemini-3.5-flash`; all ten ids verified against
+`https://openrouter.ai/api/v1/models` (337 models) on 2026-08-02.
+
+Default is now `deepseek/deepseek-v4-flash-0731`, first in the list. Pinned to a
+dated build rather than the floating `deepseek/deepseek-v4-flash` alias, so a
+model revision upstream cannot silently change how meetings are summarised.
+
+**Verification note:** `WebFetch` answered this question wrongly — it reported 5
+of 7 ids as missing because it saw a truncated view of a 337-model list. Query
+the API directly (`Invoke-RestMethod`) for catalogue questions; do not trust a
+summarising fetch over a large JSON response.
+
+### D32. Suggested questions must never look like asked questions (E9, 2026-08-02)
+`unexportedObsidianElements` selects every `#qaPanel .qa-card`, and role-lens
+suggestions are `.qa-card`s. They therefore exported as `**Q:** <question>` —
+identical in shape to a question someone actually asked. Read back weeks later
+there is no way to tell them apart, which makes the note assert that something
+was said when it was not. That is fabricated meeting content and the contract
+forbids it outright.
+
+Suggestions now export as
+`**Suggested question (not asked in the meeting) — <role> lens:** …`. They are
+still exported, because they are the follow-ups worth chasing; they are simply
+never disguised as transcript.
+
+This is the clearest case so far of why a *second, independent* auditor is worth
+the cost: three passes of Nemotron 3 Ultra returned PASS on this code. GLM 5.2
+(added as a `zai` provider in `audit.py`, using `ZAI_API_KEY`/`ZAI_BASE_URL` and
+native model ids like `glm-5.2`) found it on its first look — in fact in the
+*visible reasoning* of a run that then failed to emit a verdict at all, because
+GLM reasons at length and exhausted `max_tokens=8000` before answering. The
+provider now requests 32000 and reports truncation by name rather than calling
+the output unparseable.
+
+Also fixed in that pass: `parseSuggestedQuestion` stripped only `-`, `*` and `•`,
+but a zh-locale model told to emit `- [role] …` frequently answers with `・`,
+`·`, `．`, `、` or an ideographic space, and the unstripped marker rode into the
+question text. And the pinned consolidated block was inserted empty before its
+stream began, so a slow API showed a blank box; it now reads "Consolidating…".
+
+## 4. Known limitations / sharp edges (as of 2026-08-02)
+- The screen-share picker for system audio cannot be skipped (Chrome security);
+  the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
+  the system-audio dropdown, whose permission persists.
+- Obsidian hand-off has no receipt (see D5) — full re-send is the recovery path.
+- zh questions ending without `？` (…吗 punctuated with `。` by the ASR) are missed
+  by regex detection; acceptable so far, LLM-side catch is a backlog option.
+- `meetingContext` grows unboundedly during very long meetings (backlog R3).
+- One meeting at a time; no history browser (autosave holds only the latest session).
+- Evals cover core.js logic + a few DOM-wiring greps; audio/ASR paths need a live
+  BytePlus key and are manually tested only.
+
+- Granola is not tuned for Chinese: on zh-heavy meetings its transcript degrades
+  into Spanish/Korean fragments. Its *note* (structured English summary) stays
+  good. For a meeting both tools recorded, combine rather than dedupe — and never
+  edit Granola's own note file, its sync overwrites edits (2026-08-02).
+- The `obsidian://` fallback (file:// use only) is limited to ONE launch per user
+  gesture; Chrome blocks the rest. Direct vault writes (D28) have no such limit.
+- Suggested questions are exported under an explicit "not asked" label (D32). Any
+  new panel whose cards reuse `.qa-card` must make the same distinction or it will
+  silently export as though someone asked it.
+- Visual audit mode is verified only on the `nim` provider; `openrouter` and `zai`
+  are substance-mode only.
 
 ## 5. How to keep improving
 Run the loop: pick the top of [BACKLOG.md](BACKLOG.md) → implement → verify

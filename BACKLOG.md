@@ -7,17 +7,29 @@ never silently delete an item — strike it through with a reason.
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
 
 ## P1 — Data safety & reliability
+- [x] **E9. Suggested questions no longer export as if they were asked.** Role-lens
+  suggestions are `.qa-card`s, so the Obsidian export wrote them as `**Q:**` —
+  indistinguishable from questions actually asked, i.e. fabricated meeting content.
+  Now exported under an explicit "not asked in the meeting" label. Found by GLM 5.2
+  after three Nemotron passes said PASS. Also: CJK list markers in
+  `parseSuggestedQuestion`, and a blank pinned consolidated block on slow streams.
+  Evals 232 → 238. See D32.
+- [x] **E8. Model selection integrity.** `modelSelect` was never persisted, so the
+  model silently reverted to the first option every reload. Two dropdown ids
+  (`claude-haiku-4-5`, `gemini-flash-1.5`) did not exist on OpenRouter and would have
+  failed on selection. All 10 ids verified against the live API; default is now the
+  pinned `deepseek/deepseek-v4-flash-0731`. See D31.
 - [x] **E7. Consolidated live summary.** Rolling updates repeat as the meeting circles
   back (86 near-identical blocks in the 2026-08-02 meeting). One pinned, grouped,
   deduplicated block above the chronological list, rewritten every 4th summary;
-  excluded from its own source, the snapshot, and the Obsidian export. See D27.
+  excluded from its own source, the snapshot, and the Obsidian export. See D30.
 - [x] **E6. Role lenses + proactive questions + anti-fabrication.** 8 role lenses
   (checkboxes, colour-coded, composable) orthogonal to the meeting-type template;
   proactive "what should I be asking" suggestions tagged by role; Decisions vs
   Discussed split with [owner: unassigned]/[None recorded] markers; TRANSCRIPT_IS_DATA
   injection guard on every speech-derived prompt. Fixed questionKey losing zh dedupe
   on full-width punctuation. Audited 3 passes (Nemotron 3 Ultra): PASS/PASS/PASS.
-  Evals 218 → 232. See D26.
+  Evals 218 → 232. See D29.
 - [x] **E5. Obsidian export writes directly to the vault folder (supersedes U3/U2).**
   Root cause of chronic export loss found: Chrome blocks `obsidian://` launches without
   a *transient user activation*, which is consumed by the first launch and gone after
@@ -31,7 +43,7 @@ never silently delete an item — strike it through with a reason.
   limit and no chunking; export flags commit only after the write resolves, so failures
   are loud and retryable. obsidian:// kept as a file:// fallback, one launch per click.
   Also fixed the re-send nulling `obsidianMeetingTitle`, which renamed the meeting and
-  forked a second note instead of replacing the first. See DEVELOPMENT.md D25.
+  forked a second note instead of replacing the first. See DEVELOPMENT.md D28.
 ## P2 — Granola-parity features (the "better than Granola" gap)
 - [ ] **G2. User notes pane.** Let the user jot rough notes during the meeting; merge
   them with the transcript in the final synthesis (Granola's signature interaction).
