@@ -7,6 +7,17 @@ never silently delete an item — strike it through with a reason.
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
 
 ## P1 — Data safety & reliability
+- [x] **E7. Consolidated live summary.** Rolling updates repeat as the meeting circles
+  back (86 near-identical blocks in the 2026-08-02 meeting). One pinned, grouped,
+  deduplicated block above the chronological list, rewritten every 4th summary;
+  excluded from its own source, the snapshot, and the Obsidian export. See D27.
+- [x] **E6. Role lenses + proactive questions + anti-fabrication.** 8 role lenses
+  (checkboxes, colour-coded, composable) orthogonal to the meeting-type template;
+  proactive "what should I be asking" suggestions tagged by role; Decisions vs
+  Discussed split with [owner: unassigned]/[None recorded] markers; TRANSCRIPT_IS_DATA
+  injection guard on every speech-derived prompt. Fixed questionKey losing zh dedupe
+  on full-width punctuation. Audited 3 passes (Nemotron 3 Ultra): PASS/PASS/PASS.
+  Evals 218 → 232. See D26.
 - [x] **E5. Obsidian export writes directly to the vault folder (supersedes U3/U2).**
   Root cause of chronic export loss found: Chrome blocks `obsidian://` launches without
   a *transient user activation*, which is consumed by the first launch and gone after

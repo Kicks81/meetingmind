@@ -75,7 +75,68 @@ check('mixed: ASCII ? after zh text still detected',
 // ── questionKey ────────────────────────────────────────────────────────────
 check('dedupe key normalises case and whitespace',
   core.questionKey('Who   OWNS the AFO  integration?'),
-  'who owns the afo integration?');
+  'who owns the afo integration');
+
+// E6 advisory: full-width vs half-width terminal punctuation must fold together
+// or the same zh question is re-suggested on every cycle.
+check('zh: full-width and half-width question marks dedupe together',
+  core.questionKey('谁负责 SCS 的数据映射？'),
+  core.questionKey('谁负责 SCS 的数据映射?'));
+
+check('zh: trailing full-width period does not create a new key',
+  core.questionKey('这个什么时候上线。'),
+  core.questionKey('这个什么时候上线'));
+
+check('en: trailing punctuation stripped from key',
+  core.questionKey('Who owns this?'),
+  'who owns this');
+
+check('mixed zh-en question key normalises',
+  core.questionKey('  Maggie 负责 UAT 吗？？  '),
+  'maggie 负责 uat 吗');
+
+check('questionKey tolerates empty/undefined input',
+  core.questionKey(undefined),
+  '');
+
+check('distinct questions still produce distinct keys',
+  core.questionKey('谁负责映射') === core.questionKey('谁负责测试'),
+  false);
+
+// ── parseSuggestedQuestion (E6 role-tagged suggestions) ────────────────────
+const RK = ['engineer', 'pm', 'finance', 'design'];
+
+check('en: parses role tag and question',
+  core.parseSuggestedQuestion('- [pm] Who owns the SCS mapping?', RK),
+  { role: 'pm', question: 'Who owns the SCS mapping?' });
+
+check('zh: parses role tag with Chinese question',
+  core.parseSuggestedQuestion('- [finance] 这个的成本谁批准？', RK),
+  { role: 'finance', question: '这个的成本谁批准？' });
+
+check('role tag is case-insensitive',
+  core.parseSuggestedQuestion('- [PM] Who owns this?', RK).role,
+  'pm');
+
+check('unknown role tag is not treated as a tag',
+  core.parseSuggestedQuestion('- [marketing] Who owns this?', RK),
+  { role: null, question: '[marketing] Who owns this?' });
+
+check('zh: bracketed real content is not eaten as a role tag',
+  core.parseSuggestedQuestion('- [UAT] 什么时候上线？', RK),
+  { role: null, question: '[UAT] 什么时候上线？' });
+
+check('untagged line still yields the question',
+  core.parseSuggestedQuestion('- Who owns this?', RK),
+  { role: null, question: 'Who owns this?' });
+
+check('parseSuggestedQuestion tolerates empty input',
+  core.parseSuggestedQuestion(undefined, RK),
+  { role: null, question: '' });
+
+check('bullet variants are stripped',
+  core.parseSuggestedQuestion('• [engineer] What is the data shape?', RK).question,
+  'What is the data shape?');
 
 // ── parseActionList / actionKey (U11 action items) ─────────────────────────
 check('en: parses bulleted action list',

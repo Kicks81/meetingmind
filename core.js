@@ -28,8 +28,40 @@
   }
 
   // Normalised form used to dedupe repeated questions.
+  //
+  // Whitespace+case folding alone is not enough once CJK is involved: the same
+  // question comes back as "谁负责映射？" and "谁负责映射?" depending on the
+  // model's IME conventions, and those are different strings. Full-width and
+  // half-width terminal punctuation must therefore fold together, or dedupe
+  // silently fails for zh and the same suggestion is re-offered every cycle.
+  // Trailing punctuation carries no meaning for identity, so drop it entirely.
+  const TRAILING_PUNCT = /[?？!！.。,，、;；:：\s]+$/;
+
   function questionKey(question) {
-    return question.toLowerCase().replace(/\s+/g, ' ');
+    return String(question || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(TRAILING_PUNCT, '');
+  }
+
+  // ── Role-tagged suggestion parsing (E6) ─────────────────────────────────
+  // With several role lenses ticked at once, a suggested question is only
+  // worth colouring if we know WHICH role it came from, so the model is asked
+  // to prefix each line with a bracketed role key: "- [pm] Who owns this?".
+  //
+  // The key is validated against the known set rather than trusted: a real
+  // question can legitimately open with a bracket ("[UAT] 什么时候上线？"), and
+  // treating that as a role tag would silently eat the label. Unknown or
+  // absent tags fall back to role:null, which renders in the neutral colour
+  // with the question text intact.
+  function parseSuggestedQuestion(line, validKeys) {
+    const text = String(line == null ? '' : line).replace(/^\s*[-*•]\s*/, '').trim();
+    const m = text.match(/^\[([^\]]{1,32})\]\s*(.+)$/);
+    if (!m) return { role: null, question: text };
+    const key = m[1].trim().toLowerCase();
+    const known = Array.isArray(validKeys) && validKeys.indexOf(key) !== -1;
+    return known ? { role: key, question: m[2].trim() } : { role: null, question: text };
   }
 
   // ── Action-item detection (U11) ─────────────────────────────────────────
@@ -606,6 +638,7 @@
     extractVaultFolders,
     extractQuestions,
     questionKey,
+    parseSuggestedQuestion,
     parseActionList,
     actionKey,
     countWords,

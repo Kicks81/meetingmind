@@ -447,6 +447,79 @@ different name, and fork a *second* note instead of replacing the first. The
 title is now preserved; only `obsidianNotePath` resets, so chunk 1 rewrites the
 same file from the frontmatter down.
 
+### D26. Role lenses — orthogonal to meeting type (2026-08-02)
+`SUMMARY_TEMPLATES` encodes what KIND of meeting this is. It says nothing about
+what the LISTENER needs from it — the same standup read as an engineer and as a
+finance lead should surface different things. `ROLE_LENSES` is that second,
+orthogonal dimension: 8 lenses (engineer, pm, finance, transformation, design,
+strategy, compliance, client), each contributing a `priorities` clause and a
+`questions` clause, both appended to the same system prompt so the two dimensions
+compose.
+
+Roles are **checkboxes, not a dropdown** — someone can be running a programme and
+be the engineer on it. Multiple ticked lenses are stitched into ONE instruction by
+`roleSummaryInstruction()` / `roleQuestionInstruction()` rather than concatenated
+as N standalone paragraphs, which would restate "the listener is …" N times and
+dilute the prompt. Zero ticked yields `''` and `null`, making the prompt
+byte-identical to the pre-feature case. The checkbox row is generated from
+`ROLE_LENSES`, so adding a lens is a one-place edit.
+
+Soft cap at 4 (advisory from the audit): each lens adds ~200-300 chars to every
+prompt, so all 8 is ~1.9KB of role instruction. Not blocked — broad-based users
+keep the choice — but a hint appears past 4.
+
+**Proactive suggestions.** The Q&A panel was purely reactive: it answered
+questions asked aloud. `suggestRoleQuestions()` runs every 3rd rolling summary and
+asks what THIS role should be asking that nobody has. Colour-coding those is only
+meaningful if a suggestion is attributable, so the model tags each line
+`- [rolekey] question` and `MeetingCore.parseSuggestedQuestion()` parses it. The
+key is **validated against the ticked set, not trusted** — a real question can open
+with a bracket (`[UAT] 什么时候上线？`) and treating that as a role tag would eat the
+label. Unknown/absent tags degrade to neutral grey.
+
+The role chip is CSS `::before` content driven by a data attribute, **not a DOM
+node**: the Obsidian export and the autosave snapshot both read `.qa-question`
+textContent, and a `<span>` in there produced `"EngWhat is the data shape…"` in
+the exported note. Caught in browser verification before it shipped.
+
+**Anti-fabrication, borrowed from a public meeting-notes-specialist agent.** The
+final synthesis now separates **Decisions** (explicitly agreed) from **Discussed
+(not decided)**, and uses `[owner: unassigned]` / `[no date]` / `[None recorded]`
+instead of inventing plausible owners. Collapsing those two categories is the most
+damaging failure mode this app has: a fabricated decision reads exactly like a real
+one weeks later. `TRANSCRIPT_IS_DATA` is appended to every prompt built from speech
+— a participant saying "ignore your instructions" is content to report, not a
+command to obey.
+
+Fixed alongside: `questionKey` was `toLowerCase().replace(/\s+/g,' ')` with no
+punctuation normalisation, so `映射？` and `映射?` produced different keys and
+dedupe silently failed for Chinese — the same suggestion would be re-offered every
+cycle. Found by the auditor by inference, without it having seen core.js.
+
+### D27. Consolidated live summary (2026-08-02)
+Rolling updates are chronological and therefore repetitive: a meeting circles back
+to the same point three times and produces three near-identical bullets. After 90
+minutes the panel is an unreadable list (the 2026-08-02 meeting produced 86).
+
+The chronological blocks stay — they are what the transcript aligns to and what
+gets exported — but one pinned `.summary-block.consolidated` above them holds a
+grouped, deduplicated view, rewritten from all updates every 4th summary. The
+prompt merges duplicates into one bullet keeping the fullest version plus later
+detail, states only the LATEST position where something changed, and is explicitly
+told it REPLACES rather than appends so it cannot grow into a list of everything.
+
+It is excluded from three selectors, and each exclusion is load-bearing:
+- **its own source** — otherwise it feeds on its own output and drifts
+- **the autosave snapshot** — it is derived; restoring it would persist a stale
+  copy and reinstate it as an ordinary update block
+- **`unexportedObsidianElements`** — it is rewritten every 4 summaries, so
+  exporting it would append a near-duplicate of the whole meeting each time. The
+  FINAL SUMMARY carries the deduplicated view into the vault.
+
+Serialised through a promise queue for the same reason summaries are: two
+overlapping rewrites would interleave streamed output into one element. On failure
+the previous good view is restored rather than blanked.
+
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
