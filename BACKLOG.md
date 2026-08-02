@@ -7,6 +7,20 @@ never silently delete an item — strike it through with a reason.
 ## P0 — Chinese/English correctness (core requirement, currently broken for zh)
 
 ## P1 — Data safety & reliability
+- [x] **E5. Obsidian export writes directly to the vault folder (supersedes U3/U2).**
+  Root cause of chronic export loss found: Chrome blocks `obsidian://` launches without
+  a *transient user activation*, which is consumed by the first launch and gone after
+  any `await`. So the chunk loop had #1 succeed and the rest rejected with "Not allowed
+  to launch", and auto-export from the ASR callback (no gesture, ever) could never work
+  at all — while `sendObsidianChunk` marked all of it exported regardless. A 90-min
+  meeting on 2026-08-02 produced two overlapping notes, each holding only Segment 1,
+  with 67 minutes lost. U3's 600ms delay was treating timing, not the real constraint.
+  Now: File System Access API (the app is served over http://localhost = secure
+  context), directory handle persisted in IndexedDB, one direct write with no size
+  limit and no chunking; export flags commit only after the write resolves, so failures
+  are loud and retryable. obsidian:// kept as a file:// fallback, one launch per click.
+  Also fixed the re-send nulling `obsidianMeetingTitle`, which renamed the meeting and
+  forked a second note instead of replacing the first. See DEVELOPMENT.md D25.
 ## P2 — Granola-parity features (the "better than Granola" gap)
 - [ ] **G2. User notes pane.** Let the user jot rough notes during the meeting; merge
   them with the transcript in the final synthesis (Granola's signature interaction).

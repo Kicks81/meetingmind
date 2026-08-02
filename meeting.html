@@ -584,6 +584,8 @@
     <datalist id="folderOptions"></datalist>
     <button class="btn btn-clear" style="padding:6px 8px;" title="Pick your vault folder once — the notes-folder box then autocompletes from your vault's real folders" onclick="document.getElementById('vaultDirInput').click()">&#128193;</button>
     <input type="file" id="vaultDirInput" webkitdirectory multiple style="display:none" onchange="pickVaultFolders(event)">
+    <button class="btn btn-clear" style="padding:6px 8px;" id="vaultConnectBtn" title="Connect your Obsidian vault folder — notes are then written straight to disk instead of through an obsidian:// URI (no size limit, no dropped chunks)" onclick="connectVaultFolder()">&#128190;</button>
+    <span id="vaultStatus" style="font-size:11px;opacity:.75;align-self:center;"></span>
     <input class="api-input" style="width:200px;" type="text" id="hotwords" placeholder="Hotwords: Swetha, Kai, AFO, ..." title="Comma-separated names/jargon to help the ASR recognise them correctly">
     <button class="btn btn-start" id="recordBtn" onclick="toggleRecording()">Start Meeting</button>
     <button class="btn btn-clear" onclick="addToObsidian()">Add to Obsidian</button>
@@ -1780,7 +1782,7 @@
       // scroll inside createTranscriptSegment happened while it was still
       // empty, so it doesn't account for the height the real text adds.
       const panel = document.getElementById('transcriptPanel');
-      panel.scrollTop = panel.scrollHeight;
+      scheduleScrollPin(panel);
     }
   }
 
@@ -2294,7 +2296,7 @@
     const panel = document.getElementById('transcriptPanel');
     const el = buildSegmentElement(text, isInterim, speakerLabel);
     panel.appendChild(el);
-    panel.scrollTop = panel.scrollHeight;
+    scheduleScrollPin(panel);
     return el;
   }
 
@@ -2578,6 +2580,149 @@
   let obsidianMeetingTitle = null; // generated once, reused for the note title/filename
   let obsidianChunkNumber = 1;     // chronological chunk label *within* the single note
 
+  // ── Direct vault writes (D13) ──────────────────────────────────────────
+  // The obsidian:// hand-off is fundamentally unreliable: Chrome refuses to
+  // launch an external protocol unless the navigation carries a *transient
+  // user activation*. That activation is consumed by the first launch and is
+  // gone after any `await`, so a loop of chunks silently fails from the
+  // second one on ("Not allowed to launch 'obsidian://new?...'"), and the
+  // during-meeting auto-export — which fires from an ASR callback with no
+  // gesture at all — could never work. Worse, the launch is fire-and-forget,
+  // so the blocked chunks still got marked exported and were never retried.
+  //
+  // relay.js serves the app over http://localhost, which is a secure
+  // context, so the File System Access API is available: pick the vault
+  // folder once, keep the handle in IndexedDB, and write the .md file
+  // directly. No protocol launch, no URI length ceiling, no chunking, and a
+  // failed write throws instead of vanishing. The obsidian:// path is kept
+  // only as a fallback for file:// use.
+  let vaultDirHandle = null;
+
+  const VAULT_IDB_NAME = 'meetingmind';
+  const VAULT_IDB_STORE = 'handles';
+  const VAULT_HANDLE_KEY = 'obsidianVaultDir';
+
+  function openHandleDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(VAULT_IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(VAULT_IDB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  function idbOp(store, mode, fn) {
+    return openHandleDb().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(store, mode);
+      const req = fn(tx.objectStore(store));
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+      tx.oncomplete = () => db.close();
+    }));
+  }
+
+  // FileSystemDirectoryHandle is structured-cloneable, so it survives in
+  // IndexedDB across restarts — only the *permission* needs re-granting.
+  const loadStoredVaultHandle = () => idbOp(VAULT_IDB_STORE, 'readonly', s => s.get(VAULT_HANDLE_KEY));
+  const storeVaultHandle = (h) => idbOp(VAULT_IDB_STORE, 'readwrite', s => s.put(h, VAULT_HANDLE_KEY));
+
+  async function ensureVaultPermission(handle, interactive) {
+    const opts = { mode: 'readwrite' };
+    if ((await handle.queryPermission(opts)) === 'granted') return true;
+    // requestPermission itself needs user activation — only call it from a click.
+    if (!interactive) return false;
+    return (await handle.requestPermission(opts)) === 'granted';
+  }
+
+  function updateVaultStatusUI() {
+    const el = document.getElementById('vaultStatus');
+    if (!el) return;
+    if (vaultDirHandle) {
+      el.textContent = `Vault: ${vaultDirHandle.name}`;
+      el.style.color = '#3fb950';
+      el.title = 'Notes are written directly into this folder.';
+    } else if (!window.showDirectoryPicker) {
+      el.textContent = 'Vault: URI mode';
+      el.style.color = '';
+      el.title = 'Direct writes need the app served over http://localhost (run start.bat). Falling back to obsidian:// URIs.';
+    } else {
+      el.textContent = 'Vault: not connected';
+      el.style.color = '';
+      el.title = 'Click the disk button to write notes straight into your vault folder.';
+    }
+  }
+
+  async function connectVaultFolder() {
+    if (!window.showDirectoryPicker) {
+      alert('Direct vault writes need the app served over http://localhost.\n\nStart it with start.bat and open http://localhost:8765 instead of the file directly.');
+      return false;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({ id: 'obsidian-vault', mode: 'readwrite' });
+      if (!await ensureVaultPermission(handle, true)) {
+        alert('Write permission was declined — notes cannot be saved to the vault folder.');
+        return false;
+      }
+      vaultDirHandle = handle;
+      await storeVaultHandle(handle);
+      updateVaultStatusUI();
+      alert(`Connected to "${handle.name}".\n\nNotes are now written straight into this folder. Pick your VAULT ROOT here — the notes-folder box supplies the path inside it.`);
+      return true;
+    } catch (err) {
+      if (err.name !== 'AbortError') alert(`Could not open the vault folder: ${err.message}`);
+      return false;
+    }
+  }
+
+  // Resolves the handle for use. Non-interactive by default so background
+  // (auto-export) writes never try to raise a permission prompt they can't get.
+  async function ensureVaultReady(interactive) {
+    if (!vaultDirHandle) return false;
+    return ensureVaultPermission(vaultDirHandle, interactive);
+  }
+
+  // Walks/creates the folder chain inside the vault, then writes the file.
+  // `append` reads the existing note and concatenates — the FS API has no
+  // append mode, and notes are small enough that a read-modify-write is fine.
+  async function writeVaultNote(notePath, md, append) {
+    const parts = notePath.split('/').filter(Boolean);
+    const fileName = `${parts.pop()}.md`;
+    let dir = vaultDirHandle;
+    for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
+    const fileHandle = await dir.getFileHandle(fileName, { create: true });
+
+    let existing = '';
+    if (append) {
+      try { existing = await (await fileHandle.getFile()).text(); } catch { /* new file */ }
+    }
+    const writable = await fileHandle.createWritable();
+    await writable.write(existing + md);
+    await writable.close();
+  }
+
+  // Direct-write counterpart of sendObsidianChunk. No maxItems bisection —
+  // there is no URI limit here, so the whole backlog goes in one write. State
+  // is committed only AFTER the write resolves, so a failure is retryable.
+  async function exportViaVaultHandle() {
+    const chunk = await buildObsidianChunkMarkdown();
+    if (!chunk) return false;
+
+    await writeVaultNote(chunk.notePath, chunk.md, chunk.append);
+
+    obsidianNotePath = chunk.notePath;
+    exportLedger.push({
+      chunkNumber: obsidianChunkNumber,
+      notePath: chunk.notePath,
+      timeStr: chunk.timeStr,
+      charCount: chunk.md.length,
+      sentAt: Date.now()
+    });
+    obsidianChunkNumber++;
+    chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; invalidateSnap(el); });
+    updateExportLogUI();
+    return true;
+  }
+
   // ── Export ledger (D3) ─────────────────────────────────────────────────
   // The obsidian:// hand-off is fire-and-forget with only an optimistic
   // `exported` flag per element — if Obsidian silently drops a chunk (wrong
@@ -2660,7 +2805,10 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   }
 
   const OBSIDIAN_URI_LENGTH_LIMIT = 30000;
-  const OBSIDIAN_AUTO_SPLIT_THRESHOLD = OBSIDIAN_URI_LENGTH_LIMIT * 0.75; // leave headroom before hitting the hard limit
+  // Direct-write mode has no size ceiling, so this is purely a crash-safety
+  // flush interval: how much un-written text may accumulate before it is
+  // appended to the note mid-meeting.
+  const OBSIDIAN_AUTOSAVE_CHARS = 4000;
 
   // Injectable so tests can capture the hand-off instead of navigating.
   let obsidianNavigate = (uri) => { window.location.href = uri; };
@@ -2735,28 +2883,42 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     el.title = exportLedger.map(e => `#${e.chunkNumber} → ${e.notePath} @ ${e.timeStr} (${e.charCount} chars)`).join('\n');
   }
 
-  // Drains everything un-exported as a series of URI-sized appends. The
-  // pause between sends gives Obsidian time to process each URI — rapid
-  // back-to-back protocol navigations can drop some.
-  async function sendAllObsidianChunks() {
-    let sentAny = false;
-    while (await sendObsidianChunk()) {
-      sentAny = true;
-      await new Promise(r => setTimeout(r, 600));
+  // Writes everything un-exported. With a connected vault folder that's a
+  // single direct write; otherwise it falls back to ONE obsidian:// launch,
+  // because Chrome only honours one protocol navigation per user gesture —
+  // the old loop-with-delays sent chunk 1 and had every later launch blocked
+  // ("Not allowed to launch"), while still marking them exported.
+  async function sendAllObsidianChunks(interactive = true) {
+    if (await ensureVaultReady(interactive)) return exportViaVaultHandle();
+
+    if (!await sendObsidianChunk()) return false;
+
+    const { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
+    const remaining = transcriptEls.length + summaryEls.length + qaEls.length;
+    if (remaining) {
+      alert(`Sent one section to Obsidian — ${remaining} item(s) are still pending.\n\nChrome allows only one obsidian:// launch per click, so click "Add to Obsidian" again for the next one.\n\nTo send everything at once, connect your vault folder with the disk button.`);
     }
-    return sentAny;
+    return true;
   }
 
-  // Called after every new final transcript segment — cheaply estimates the
-  // unsent content's size (×3 as a buffer for how much CJK text expands
-  // under encodeURIComponent) and, once it's approaching the URI limit,
-  // automatically appends that chunk into the meeting's single note.
+  // Called after every new final transcript segment. Only meaningful with a
+  // connected vault folder: an ASR callback carries no user gesture, so the
+  // obsidian:// path could never launch from here — it just marked content
+  // exported and dropped it. Now it either genuinely writes, or does nothing
+  // and leaves the content pending for the manual button.
   async function checkObsidianAutoSplit() {
-    if (!document.getElementById('obsidianVault').value.trim()) return;
+    if (!vaultDirHandle) return;
     const { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
-    const roughLength = [...transcriptEls, ...summaryEls, ...qaEls].reduce((sum, el) => sum + el.textContent.length, 0);
-    if (roughLength * 3 < OBSIDIAN_AUTO_SPLIT_THRESHOLD) return;
-    await sendObsidianChunk();
+    const pending = [...transcriptEls, ...summaryEls, ...qaEls];
+    if (!pending.length) return;
+    if (pending.reduce((sum, el) => sum + el.textContent.length, 0) < OBSIDIAN_AUTOSAVE_CHARS) return;
+    if (!await ensureVaultReady(false)) return;
+    try {
+      await exportViaVaultHandle();
+    } catch (err) {
+      console.error('Vault auto-write failed:', err);
+      flashStatusError('Vault write failed — content kept for retry');
+    }
   }
 
   // Manual button — sends whatever hasn't been exported yet as the next
@@ -2765,21 +2927,39 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   // exported when the obsidian:// URI is *launched*, but the hand-off is
   // fire-and-forget — if Obsidian rejected it (e.g. wrong vault name at the
   // time), the flags lie and the user needs a way to send it all again.
+  // A failed direct write throws — surface it and leave every export flag
+  // untouched so the same click can simply be repeated.
+  async function exportGuarded() {
+    try {
+      return await sendAllObsidianChunks(true);
+    } catch (err) {
+      console.error('Obsidian export failed:', err);
+      flashStatusError('Obsidian export failed');
+      alert(`Writing to the vault failed:\n\n${err.message}\n\nNothing was marked as exported — fix the problem and click again.`);
+      return true; // handled; don't fall through to the re-send prompt
+    }
+  }
+
   async function addToObsidian() {
-    const vault = document.getElementById('obsidianVault').value.trim();
-    if (!vault) { alert('Please enter your Obsidian vault name first.'); return; }
-    const sent = await sendAllObsidianChunks();
-    if (sent) return;
+    if (!vaultDirHandle && !document.getElementById('obsidianVault').value.trim()) {
+      alert('Connect your Obsidian vault folder with the disk button, or enter your vault name first.');
+      return;
+    }
+    if (await exportGuarded()) return;
 
     const hasContent = document.querySelector('#transcriptPanel .transcript-segment.final, #summaryPanel .summary-block, #qaPanel .qa-card');
     if (!hasContent) { alert('Nothing to send yet — the meeting has no content.'); return; }
 
-    if (confirm('Everything is already marked as exported.\n\nIf the note is missing in Obsidian (e.g. the vault name was wrong during the meeting), click OK to RE-SEND the entire meeting as a fresh note.')) {
+    if (confirm('Everything is already marked as exported.\n\nClick OK to RE-WRITE the whole meeting into the same note, replacing what is there.')) {
       document.querySelectorAll('[data-obsidian-exported]').forEach(el => { delete el.dataset.obsidianExported; invalidateSnap(el); });
+      // Keep obsidianMeetingTitle. Nulling it made suggestMeetingTitle() run
+      // again on the now-longer transcript, return a different name, and fork
+      // a SECOND note rather than replacing the first — which is how one
+      // meeting ended up as two overlapping files in the vault.
       obsidianNotePath = null;
-      obsidianMeetingTitle = null;
       obsidianChunkNumber = 1;
-      await sendAllObsidianChunks();
+      exportLedger = [];
+      await exportGuarded();
     }
   }
 
@@ -2857,17 +3037,55 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
-  // Only snap to bottom if the user was already near it — otherwise, several
-  // concurrent streaming answers/summaries each forcing scrollTop=bottom on
-  // every token fight each other and make manual scrolling feel broken.
-  function scrollToBottomIfNearBottom(panel, threshold = 60) {
+  // H1: Frame-batched scroll pinning. Any number of scroll-pin requests for
+  // the same panel within one animation frame coalesce into a single
+  // scrollTop/scrollHeight layout pass — per-ASR-frame and per-streamed-token
+  // reflows were the dominant cost driving the ~1hr freeze. `conditional`
+  // panels get their near-bottom-ness re-checked at flush time (not at call
+  // time), so scrolling behavior is unchanged — only the timing of the check
+  // moves to just before the pin.
+  const _scrollPinQueue = new Map(); // panel -> conditional (bool); false wins if mixed in one frame
+  let _scrollPinRAF = null;
+  let _scrollPinTimer = null;
+
+  function _flushScrollPins() {
+    _scrollPinRAF = null;
+    _scrollPinTimer = null;
+    for (const [panel, conditional] of _scrollPinQueue) {
+      if (!panel) continue;
+      // Panels marked autoscroll=always (summary, Q&A) pin to the latest
+      // content unconditionally — they're glanced at during the meeting, so
+      // the newest update must always be visible.
+      if (!conditional || panel.dataset.autoscroll === 'always') {
+        panel.scrollTop = panel.scrollHeight;
+        continue;
+      }
+      // Only snap to bottom if the user was already near it — otherwise,
+      // several concurrent streaming answers/summaries each forcing
+      // scrollTop=bottom on every token fight each other and make manual
+      // scrolling feel broken.
+      const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
+      if (distanceFromBottom <= 60) panel.scrollTop = panel.scrollHeight;
+    }
+    _scrollPinQueue.clear();
+  }
+
+  function scheduleScrollPin(panel, conditional = false) {
     if (!panel) return;
-    // Panels marked autoscroll=always (summary, Q&A) pin to the latest
-    // content unconditionally — they're glanced at during the meeting, so
-    // the newest update must always be visible.
-    if (panel.dataset.autoscroll === 'always') { panel.scrollTop = panel.scrollHeight; return; }
-    const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
-    if (distanceFromBottom <= threshold) panel.scrollTop = panel.scrollHeight;
+    const prev = _scrollPinQueue.get(panel);
+    _scrollPinQueue.set(panel, prev === false ? false : conditional);
+    if (_scrollPinRAF || _scrollPinTimer) return;
+    // rAF is throttled/paused while the tab is hidden — fall back to a timer
+    // so background meetings still get pinned.
+    if (document.hidden) {
+      _scrollPinTimer = setTimeout(_flushScrollPins, 250);
+    } else {
+      _scrollPinRAF = requestAnimationFrame(_flushScrollPins);
+    }
+  }
+
+  function scrollToBottomIfNearBottom(panel) {
+    scheduleScrollPin(panel, true);
   }
 
   function setProcessing(msg) {
@@ -2922,6 +3140,18 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     if (savedDevice && [...select.options].some(o => o.value === savedDevice)) {
       select.value = savedDevice;
     }
+
+    // Re-adopt the vault folder picked in an earlier session. The handle
+    // survives in IndexedDB; only the permission may have lapsed back to
+    // 'prompt', and re-granting needs a click — so ensureVaultReady(true)
+    // runs on the first "Add to Obsidian" rather than here.
+    try {
+      const stored = await loadStoredVaultHandle();
+      if (stored) vaultDirHandle = stored;
+    } catch (err) {
+      console.warn('Could not restore the saved vault folder:', err.message);
+    }
+    updateVaultStatusUI();
   }
 
   // Chrome's built-in password manager can reset type="password" fields

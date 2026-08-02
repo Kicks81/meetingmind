@@ -395,6 +395,58 @@ design is simple (no complex driver API introspection), fails safe (worst case: 
 false alarm that the user dismisses), and is user-friendly (a single, clear action
 instead of "check the console logs").
 
+### D25. Direct vault writes replace the obsidian:// hand-off (2026-08-02)
+The `obsidian://new` export was losing most of every meeting, silently. Chrome
+refuses to launch an external protocol unless the navigation carries a
+**transient user activation**. That activation is consumed by the first launch
+and is gone after any `await` — so `sendAllObsidianChunks`, which looped with a
+600ms delay between chunks, had chunk 1 succeed and every later chunk rejected
+with `Not allowed to launch 'obsidian://new?...'`. `checkObsidianAutoSplit`,
+firing from an ASR transcript callback, never had a gesture at all and so could
+*never* work.
+
+The damage was compounded by `sendObsidianChunk` marking elements
+`obsidianExported = '1'` and pushing to the export ledger immediately after
+calling `obsidianNavigate()`. The hand-off is fire-and-forget, so a blocked
+launch was indistinguishable from a delivered one: the app reported "N chunks
+sent" for content Chrome had thrown away, and never retried it. Observed on
+2026-08-02: a 90-minute meeting produced two overlapping notes, each containing
+only `## Segment 1`, with 67 minutes absent from both.
+
+The 600ms delay and its "rapid back-to-back protocol navigations can drop some"
+comment were treating the wrong cause — the constraint is user activation, not
+timing. No delay could have fixed it.
+
+**Fix.** relay.js serves the app over `http://localhost` (D-static-serving),
+which is a *secure context*, so the File System Access API is available:
+- `connectVaultFolder()` — `showDirectoryPicker({mode:'readwrite'})` once; the
+  `FileSystemDirectoryHandle` is structured-cloneable so it persists in
+  IndexedDB across restarts. Only the permission lapses to `prompt`, and
+  re-granting needs a click, so `ensureVaultReady(true)` runs on the manual
+  button, never in the background.
+- `writeVaultNote()` — walks/creates the folder chain with
+  `getDirectoryHandle(..., {create:true})`, then writes. `append` is a
+  read-modify-write; the FS API has no append mode and meeting notes are small.
+- `exportViaVaultHandle()` — commits export flags and the ledger **only after
+  the write resolves**. A failure throws, nothing is marked exported, and the
+  same click can simply be repeated.
+
+Consequences: no protocol launch, no 30,000-char URI ceiling, no chunking or
+bisection, no duplicate notes, and failures are loud. Auto-export during a
+meeting now genuinely works (gesture-free) and becomes real crash safety —
+`OBSIDIAN_AUTOSAVE_CHARS` is a flush interval, not a size limit.
+
+The obsidian:// path is retained only as a `file://` fallback, but reduced to
+**one launch per click** with a count of what is still pending, since that is
+all Chrome permits.
+
+Also fixed alongside: the "everything already exported" re-send in
+`addToObsidian()` used to null `obsidianMeetingTitle`, which made
+`suggestMeetingTitle()` re-run against the now-longer transcript, return a
+different name, and fork a *second* note instead of replacing the first. The
+title is now preserved; only `obsidianNotePath` resets, so chunk 1 rewrites the
+same file from the frontmatter down.
+
 ## 4. Known limitations / sharp edges (as of 2026-07-10)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
