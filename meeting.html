@@ -68,7 +68,7 @@
 
   .model-select:focus { outline: none; border-color: #58a6ff; }
 
-  btn, .btn {
+  .btn {
     padding: 7px 16px;
     border-radius: 6px;
     border: none;
@@ -2944,25 +2944,6 @@
     if (systemStream && systemStream.getAudioTracks().length) {
       systemSourceNode = audioCtx.createMediaStreamSource(systemStream);
       systemSourceNode.connect(processorNode); // Web Audio sums multiple inputs into the same node automatically
-
-      // TEMPORARY DIAGNOSTIC — logs the actual captured system-audio peak
-      // level once a second so we can tell whether Windows is silently
-      // delivering empty samples (e.g. a Bluetooth loopback limitation)
-      // versus a problem elsewhere in the pipeline. Safe: this is a passive
-      // tap, it doesn't alter what gets sent to BytePlus.
-      const diagAnalyser = audioCtx.createAnalyser();
-      systemSourceNode.connect(diagAnalyser);
-      const diagBuf = new Float32Array(diagAnalyser.fftSize);
-      let diagTicksLeft = 30; // ~30s of ticks; runs on a fixed count, not the isRecording flag (which isn't set true until after this function returns)
-      const logSystemAudioLevel = () => {
-        if (diagTicksLeft-- <= 0) return;
-        diagAnalyser.getFloatTimeDomainData(diagBuf);
-        let peak = 0;
-        for (const s of diagBuf) peak = Math.max(peak, Math.abs(s));
-        console.log('[system audio level]', peak.toFixed(4), peak > 0.001 ? '(has signal)' : '(silent)');
-        setTimeout(logSystemAudioLevel, 1000);
-      };
-      logSystemAudioLevel();
     }
 
     processorNode.connect(muteNode);

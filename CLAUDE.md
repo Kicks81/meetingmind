@@ -15,8 +15,10 @@ standard**, with first-class **Chinese + English (incl. code-switching)** suppor
 - ASR: BytePlus Seed-ASR streaming (`bigmodel_async`, resource `volc.seedasr.sauc.duration`),
   16 kHz PCM16 mono, gzip-framed binary protocol implemented in meeting.html.
 - LLM: OpenRouter (user-selectable model), streaming responses.
-- Export: `obsidian://new` URIs, one note per meeting grown via `append=true` chunks
-  (~30k char URI limit → auto-split).
+- Export: direct writes to the vault folder via the File System Access API (no size
+  limit, one write per chunk; see D25/D28/E5) once a vault directory is connected;
+  `obsidian://new` URIs (grown via `append=true`, ~30k char limit → auto-split) remain
+  as the `file://`-mode fallback when no vault handle is available.
 
 ## Hard constraints
 - **Chinese + English must both work end to end.** Any logic that tokenizes, counts words,
@@ -38,6 +40,6 @@ backlog item → implement → verify (evals + manual check) → commit → upda
 
 ## Verification
 - Pure text-processing logic lives in (or should be extracted to) testable functions;
-  run `node evals/run.mjs` (once it exists — backlog item L0) for regression checks.
+  run `node evals/run.mjs` for regression checks (289 checks at time of writing).
 - For UI/audio changes: open meeting.html in Chrome, use the relay, and sanity-check
   with a short recording. ASR requires a valid BytePlus key — evals must not depend on it.

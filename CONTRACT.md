@@ -51,7 +51,7 @@ that is correct only for English fails this contract.
 
 - Source of truth is `meeting.html` / `core.js` in the repo root. The nested
   `meeting note taker/` folder is a stale duplicate — ignore it.
-- Deterministic gate: `node evals/run.mjs` must pass (258 tests at time of
+- Deterministic gate: `node evals/run.mjs` must pass (289 tests at time of
   writing), plus an inline-script syntax parse and a duplicate-`id` scan.
 - The app is served at `http://localhost:8765` by `relay.js`; verification is
   done in a real browser against that origin, not by reading code alone.

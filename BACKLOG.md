@@ -73,6 +73,15 @@ known zh defect is open. Every text-logic change still needs zh/en/mixed fixture
   live-summary template part shipped as U5).
 - [ ] **G4. Speaker attribution.** Investigate BytePlus utterance speaker fields /
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
+- [ ] **G5. Word-document export for users without an Obsidian vault connected.**
+  `downloadEntireMeetingAsMarkdown()` already covers the no-vault fallback, but a
+  `.md` file is a dead end for anyone who doesn't already use Obsidian/a markdown
+  editor. Add a second download option that builds an RTF document (bold/headings/
+  bullets preserved) and saves it with a `.doc` extension — Word/LibreOffice/Google
+  Docs all open RTF natively. No new runtime dependency (a true `.docx` needs a zip
+  library from a CDN, which breaks fully-offline `file://` use — see CLAUDE.md's
+  dependency-free constraint). Reuses `buildObsidianChunkMarkdown(Infinity)`'s output
+  as the source content, same as the existing markdown download.
 
 ## P2b — Meeting Notes Specialist standard (audit 2026-08-18)
 Audited the exported note against an external "Meeting Notes Specialist" standard
@@ -116,13 +125,20 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   document as a sharp edge rather than fix.
 
 ## P3 — Engineering health
-- [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
-- [ ] **Stale docs.** CLAUDE.md still says `evals/run.mjs` doesn't exist yet ("backlog
-  item L0") and still describes export as `obsidian://new` append chunks — replaced by
-  D28/E5. CONTRACT.md says 218 evals; the suite is at 258.
-- [ ] **`origin/main` is ~1 month behind HEAD** — the whole E1–E9 arc appears unpushed.
-- [ ] **Remove the `TEMPORARY DIAGNOSTIC` system-audio peak logger** in meeting.html
-  (~line 2320), or promote it into the diagnostics drawer (E4) if it is still useful.
+- [x] **L3. Fix stray `btn` element selector.** `btn, .btn` in CSS (meeting.html:69) —
+  `btn` matched a nonexistent `<btn>` element (confirmed zero uses in the file); now
+  just `.btn`.
+- [x] **Stale docs.** CLAUDE.md said `evals/run.mjs` doesn't exist yet ("backlog item
+  L0") and still described export as plain `obsidian://new` append chunks. Now
+  documents the real precedence: direct vault writes via the File System Access API
+  (D25/D28/E5) as primary, `obsidian://` kept as the `file://`-mode fallback. Both
+  CLAUDE.md and CONTRACT.md's eval counts updated 218/258 → 289.
+- [x] ~~`origin/main` is ~1 month behind HEAD~~ — already stale by the time this was
+  read; the ENGINEERING_REVIEW.md remediation run (D34-D38, A5, qa-answer export fix)
+  pushed everything current.
+- [x] **Removed the `TEMPORARY DIAGNOSTIC` system-audio peak logger** in meeting.html —
+  it was scoped to a specific past investigation (D22's Bluetooth-loopback question),
+  not ongoing value; not promoted to the diagnostics drawer.
 
 ## Done
 - [x] D34 — SSE streaming decoder boundary bugs: fix UTF-8 multi-byte corruption and silent line-dropping at chunk boundaries in `streamIntoElement`; extract `parseSseChunks` pure function to `core.js`
