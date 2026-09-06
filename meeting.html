@@ -3894,6 +3894,38 @@
   // Walks/creates the folder chain inside the vault, then writes the file.
   // `append` reads the existing note and concatenates — the FS API has no
   // append mode, and notes are small enough that a read-modify-write is fine.
+  async function vaultFileExists(notePath) {
+    const parts = notePath.split('/').filter(Boolean);
+    const fileName = `${parts.pop()}.md`;
+    try {
+      let dir = vaultDirHandle;
+      for (const part of parts) dir = await dir.getDirectoryHandle(part); // no create — must already exist
+      await dir.getFileHandle(fileName); // no create — must already exist
+      return true;
+    } catch (err) {
+      if (err.name === 'NotFoundError') return false;
+      throw err; // real failure (permission, etc.) — do not silently assume "safe to overwrite"
+    }
+  }
+
+  // A5: two meetings on the same day whose LLM-suggested titles collide would
+  // otherwise resolve to the same notePath — and since isFirstChunk is true for
+  // the second meeting too, writeVaultNote's append:false write destroys the
+  // first meeting's note. Only meaningful when we can actually probe the vault
+  // (vaultDirHandle set) — the obsidian://-URI and download fallbacks have no
+  // filesystem read access to check against, so those are left as before.
+  async function nextAvailableNotePath(baseFolder, yearMonth, dateStr, title) {
+    const baseName = `${dateStr} - ${title}`;
+    if (!vaultDirHandle) return `${baseFolder}/${yearMonth}/${baseName}`;
+    let n = 1;
+    let candidate = baseName;
+    while (await vaultFileExists(`${baseFolder}/${yearMonth}/${candidate}`)) {
+      n++;
+      candidate = `${baseName} (${n})`;
+    }
+    return `${baseFolder}/${yearMonth}/${candidate}`;
+  }
+
   async function writeVaultNote(notePath, md, append) {
     const parts = notePath.split('/').filter(Boolean);
     const fileName = `${parts.pop()}.md`;
@@ -4010,7 +4042,7 @@
     if (isFirstChunk) {
       const yearMonth = dateStr.slice(0, 7);
       const baseFolder = document.getElementById('obsidianFolder').value.trim() || 'Meeting Notes';
-      notePath = `${baseFolder}/${yearMonth}/${dateStr} - ${obsidianMeetingTitle}`;
+      notePath = await nextAvailableNotePath(baseFolder, yearMonth, dateStr, obsidianMeetingTitle);
     }
 
     const transcriptLines = transcriptEls.map(el => {

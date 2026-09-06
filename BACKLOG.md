@@ -9,13 +9,18 @@ never silently delete an item — strike it through with a reason.
 known zh defect is open. Every text-logic change still needs zh/en/mixed fixtures.)*
 
 ## P1 — Data safety & reliability
-- [ ] **A5. Same title + same day silently overwrites the earlier meeting.** The note
-  path is `{folder}/{YYYY-MM}/{date} - {title}`. Two meetings on one day whose
-  LLM-suggested titles collide resolve to the same path, and because `isFirstChunk`
-  is true for the second one it writes with `append: false` — destroying the first
-  meeting's note. Needs a collision check in `buildObsidianChunkMarkdown` (suffix
-  ` (2)`, or detect an existing file and append instead). Found while fixing V2;
-  pre-existing and unrelated to that change.
+- [x] **A5. Same title + same day silently overwrites the earlier meeting.** The note
+  path was `{folder}/{YYYY-MM}/{date} - {title}` with no collision check — two
+  meetings on one day whose LLM-suggested titles collide resolved to the same path,
+  and because `isFirstChunk` is true for the second one too, it wrote with
+  `append: false`, destroying the first meeting's note via `writeVaultNote`'s
+  unconditional `createWritable()` truncation. Fixed with `nextAvailableNotePath()`:
+  probes the vault (via the existing `vaultDirHandle`, `NotFoundError`-only-means-new
+  pattern already used by `writeVaultNote`) and appends ` (2)`, ` (3)`, ... until it
+  finds a path nothing already occupies. Only meaningful in direct-vault-write mode —
+  the `obsidian://`-URI and download fallbacks have no filesystem read access to probe
+  against, so those paths are unchanged. Found while fixing V2; pre-existing and
+  unrelated to that change.
 - [ ] **`.qa-answer` exports as run-on text.** Identical defect to the one V3 fixed for
   summaries: the export reads `.qa-answer.textContent`, but the element holds
   `formatSummaryHtml` output, so bullets and bold are stripped and no newlines survive
