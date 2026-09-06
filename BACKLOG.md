@@ -148,12 +148,30 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   Also pinned `[owner: unassigned]`/`[no date]` to stay in English exactly as written
   regardless of the output-language selection, so `outputLanguageInstruction` can't turn
   them into `[负责人：未分配]` on a zh meeting and break CONTRACT.md's exact-string greps.
-- [ ] **A4. The 4-section record is buried at the bottom of the note.** Export is
-  chronological `## Segment N` blocks and the final synthesis is just another block
-  inside the *last* one. Moving it to the top needs a full-note overwrite in the most
-  dangerous code in the app — do it only after D33's V3, guard it with a
-  "chronological tail is byte-identical" tripwire, and note it is **impossible on the
-  `obsidian://` path** (no read, no acknowledgement, 30k cap).
+- [x] **A4. The 4-section record is buried at the bottom of the note.** Export was
+  chronological `## Segment N` blocks with the final synthesis just another block
+  inside the *last* one. Fixed with a post-export, opt-in-by-nature restructure step
+  (`restructureExportedNote()` in meeting.html, `MeetingCore.restructureFinalSummaryToTop`
+  for the actual byte manipulation — the most dangerous code in the app, so it's pure
+  and eval-tested rather than trusted on faith): reads the just-exported file back,
+  confirms the final-synthesis text occurs **exactly once** (aborts on 0 — nothing to
+  move — or 2+ — ambiguous, don't guess), moves it to a new `## Final Summary` section
+  right after the header, and asserts (a second, independent check, not just "trust the
+  construction") that every other byte survives unchanged before writing anything back.
+  Any failure at any step — including the tripwire declining — leaves the
+  already-exported file exactly as it was; this only ever runs *after* a successful
+  export, never blocking or risking it. Impossible on the `obsidian://` path (no read
+  access to the file at all), so it silently no-ops without `vaultDirHandle`.
+- [ ] **Diarization labels (G4) don't reach the exported note.** `applyDiarizationLabels()`
+  stamps `.transcript-segment` badges in the live DOM, but diarization runs *after* the
+  Stop-path export already wrote the transcript to disk — so the note never gets the
+  "(Speaker A)" annotations `buildObsidianChunkMarkdown`'s transcript-line builder would
+  otherwise add from `el.dataset.speaker`. Found while implementing A4 (which reads the
+  file back anyway) but is a distinct gap, not in scope for A4 itself. Likely fix: once
+  diarization finishes, rebuild just the `**Transcript**` section(s) from the live DOM
+  (now speaker-labeled) and splice them back in via the same read-back-and-rewrite
+  pattern A4 established — same tripwire discipline required, since it's another
+  full-file rewrite.
 - [x] **A6. The note header (including A1's Attendees line) is written once, on
   chunk 1**, so a late-joining attendee never reaches it — updating the attendees
   field mid-meeting only affects a future meeting, not the one already in progress.

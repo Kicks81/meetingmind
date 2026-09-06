@@ -3732,6 +3732,18 @@
             flashStatusError('Speaker diarization failed: ' + (diarizeErr.message || String(diarizeErr)));
           }
         }
+
+        // A4: same independence reasoning as diarization above — a failure
+        // here must never read as an export failure; the export already
+        // succeeded (or didn't) on its own above, and restructureExportedNote
+        // itself guarantees it never writes anything on an unexpected
+        // mismatch, so the worst case is simply "the file wasn't restructured
+        // this time", not a corrupted note.
+        try {
+          await restructureExportedNote();
+        } catch (restructureErr) {
+          console.warn('A4: restructuring the exported note failed (file left as originally exported):', restructureErr.message);
+        }
       } finally {
         document.getElementById('statusText').textContent = 'Stopped';
         document.getElementById('recordBtn').textContent = 'Start Meeting';
@@ -4132,6 +4144,53 @@
     const writable = await fileHandle.createWritable();
     await writable.write(existing + md);
     await writable.close();
+  }
+
+  // Read-only counterpart of writeVaultNote's directory traversal — A4 needs
+  // to read the note back before it can safely rewrite it. Uses the default
+  // {create: false} on every handle lookup (unlike writeVaultNote's writes),
+  // so this can never accidentally create an empty file/folder while probing.
+  async function readVaultNoteFullText(notePath) {
+    const parts = notePath.split('/').filter(Boolean);
+    const fileName = `${parts.pop()}.md`;
+    let dir = vaultDirHandle;
+    for (const part of parts) dir = await dir.getDirectoryHandle(part);
+    const fileHandle = await dir.getFileHandle(fileName);
+    return await (await fileHandle.getFile()).text();
+  }
+
+  // A4: moves the 4-section final-synthesis record from wherever it landed
+  // chronologically to the top of the note. Deliberately conservative — any
+  // failure or unexpected mismatch (including the pure tripwire logic in
+  // core.js declining to proceed) leaves the already-exported file exactly
+  // as it was; this is a nice-to-have restructure on top of a meeting that
+  // already exported successfully, never a step that can make the export
+  // WORSE than not having run at all. Impossible on the obsidian://-URI path
+  // (no read access to the file), so it silently no-ops without vaultDirHandle.
+  async function restructureExportedNote() {
+    if (!vaultDirHandle || !obsidianNotePath) return;
+    const finalSynthesisEl = document.querySelector('#summaryPanel .summary-block.final-synthesis');
+    if (!finalSynthesisEl || !finalSynthesisEl.dataset.obsidianExported) return; // nothing exported yet to move
+
+    const label = finalSynthesisEl.querySelector('.summary-label').textContent;
+    const content = summaryMarkdown(finalSynthesisEl.querySelector('.summary-text'));
+    const synthesisText = `${label}:\n${content}`;
+
+    let fullText;
+    try {
+      fullText = await readVaultNoteFullText(obsidianNotePath);
+    } catch (err) {
+      console.warn('A4: could not read back the exported note to restructure it; leaving it as-is:', err.message);
+      return;
+    }
+
+    const result = MeetingCore.restructureFinalSummaryToTop(fullText, synthesisText);
+    if (!result.ok) {
+      console.warn('A4: declined to move the final summary (safe no-op):', result.reason);
+      return;
+    }
+
+    await writeVaultNote(obsidianNotePath, result.restructured, false); // full overwrite — result.restructured already IS the complete new file
   }
 
   // Direct-write counterpart of sendObsidianChunk. No maxItems bisection —

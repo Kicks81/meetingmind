@@ -1232,6 +1232,48 @@ check('buildWavFile — blockAlign = channels * bytesPerSample', wavHdr.blockAli
 check('buildWavFile — data chunk length matches input', wavHdr.dataLength, wavTestPcm.length);
 check('buildWavFile — PCM data bytes preserved verbatim after the header', [...wavOut.slice(44)], [...wavTestPcm]);
 
+// ── restructureFinalSummaryToTop (A4) ────────────────────────────────────────
+// The safety-critical case here isn't "does the happy path work" — it's "does
+// every ambiguous/unexpected case abort instead of guessing". A bug that
+// silently proceeds on a bad assumption could corrupt or duplicate an entire
+// meeting's exported note, so each abort condition gets its own fixture.
+
+const a4Header = '---\ntitle: Team Sync\ndate: 2026-09-06\ntags: [meeting, meetingmind]\n---\n\n# Team Sync\n2026-09-06 10:00\nAttendees: Alice, Bob\n\n';
+const a4Synthesis = 'FINAL SUMMARY — 10:05:00:\n**TL;DR**\n- Budget approved';
+const a4Chrono = '## Segment 1 — 10:00:00\n\n**Summary**\nUPDATE 1:\n- Budget discussed\n\n**Transcript**\n**10:00:00** — We approved the budget.\n\n## Segment 2 — 10:05:00\n\n**Summary**\n' + a4Synthesis + '\n\n**Transcript**\n**10:05:00** — Anything else? No.\n';
+const a4FullText = a4Header + a4Chrono;
+
+const a4Result = core.restructureFinalSummaryToTop(a4FullText, a4Synthesis);
+check('restructureFinalSummaryToTop — succeeds when the synthesis block occurs exactly once', a4Result.ok, true);
+check('restructureFinalSummaryToTop — header is preserved verbatim before the moved section',
+  a4Result.restructured.startsWith(a4Header + '## Final Summary\n' + a4Synthesis), true);
+check('restructureFinalSummaryToTop — original synthesis occurrence is gone from its old spot (moved, not copied)',
+  a4Result.restructured.split(a4Synthesis).length - 1, 1);
+check('restructureFinalSummaryToTop — chronological content survives, byte-identical, after the moved section',
+  a4Result.restructured.endsWith(a4Chrono.split(a4Synthesis).join('')), true);
+
+// zh/mixed content through the same success path — this function doesn't
+// interpret the text at all, but a byte-identity guarantee must hold
+// regardless of script.
+const a4SynthesisZh = 'FINAL SUMMARY — 10:05:00:\n**决定**\n- 预算已批准';
+const a4ChronoZh = a4Chrono.replace(a4Synthesis, a4SynthesisZh);
+const a4ResultZh = core.restructureFinalSummaryToTop(a4Header + a4ChronoZh, a4SynthesisZh);
+check('restructureFinalSummaryToTop — zh content succeeds the same way', a4ResultZh.ok, true);
+check('restructureFinalSummaryToTop — zh: moved section preserved verbatim',
+  a4ResultZh.restructured.includes('## Final Summary\n' + a4SynthesisZh), true);
+
+// Abort conditions — must return ok:false and (implicitly, by contract) the
+// caller never writes anything in that case.
+check('restructureFinalSummaryToTop — aborts when the synthesis block is not found at all (0 occurrences)',
+  core.restructureFinalSummaryToTop(a4FullText.replace(a4Synthesis, 'something else entirely'), a4Synthesis).ok, false);
+check('restructureFinalSummaryToTop — aborts when the synthesis block occurs more than once (ambiguous)',
+  core.restructureFinalSummaryToTop(a4FullText + '\n' + a4Synthesis, a4Synthesis).ok, false);
+check('restructureFinalSummaryToTop — aborts when no "## Segment" structure can be found',
+  core.restructureFinalSummaryToTop(a4Header + a4Synthesis, a4Synthesis).ok, false);
+check('restructureFinalSummaryToTop — aborts on missing/empty inputs',
+  [core.restructureFinalSummaryToTop('', a4Synthesis).ok, core.restructureFinalSummaryToTop(a4FullText, '').ok],
+  [false, false]);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {

@@ -705,6 +705,60 @@
     return segments.join(' ');
   }
 
+  // ── Move the final-synthesis block to the top of the note (A4) ──────────
+  // The exported note is chronological "## Segment N" blocks, and the
+  // 4-section final-synthesis record (TL;DR/Decisions/Action Items/Open
+  // Questions) is just another block inside the LAST one — buried at the
+  // bottom of a long meeting's note. This moves it to the top on a full
+  // rewrite, WITHOUT trusting that move to be safe on faith: `synthesisText`
+  // must occur in `fullText` EXACTLY once (not zero — nothing exported yet
+  // to move; not more than once — ambiguous which occurrence is the real
+  // one, don't guess), and every byte of the file other than the moved block
+  // must survive the rewrite completely unchanged. Only meaningful in
+  // direct-vault-write mode (see meeting.html) — the obsidian://-URI path
+  // has no read access to the file at all, so it can't be attempted there.
+  //
+  // Returns `{ ok: true, restructured }` or `{ ok: false, reason }` — the
+  // caller must NEVER write `fullText` back to disk on `ok: false`; the file
+  // is safest left exactly as it already was.
+  function restructureFinalSummaryToTop(fullText, synthesisText) {
+    if (!fullText || !synthesisText) return { ok: false, reason: 'missing fullText or synthesisText' };
+
+    const occurrences = fullText.split(synthesisText).length - 1;
+    if (occurrences !== 1) {
+      return { ok: false, reason: `expected the synthesis block to occur exactly once in the file, found ${occurrences}` };
+    }
+
+    // Exactly one occurrence was just confirmed above, so a global
+    // split/join here removes precisely that one instance — not "all
+    // occurrences" in the sense that would be unsafe with more than one.
+    const withoutSynthesis = fullText.split(synthesisText).join('');
+
+    const segmentIdx = withoutSynthesis.indexOf('## Segment ');
+    if (segmentIdx === -1) {
+      return { ok: false, reason: 'could not locate the chronological "## Segment" structure' };
+    }
+
+    const header = withoutSynthesis.slice(0, segmentIdx);
+    const chronologicalTail = withoutSynthesis.slice(segmentIdx);
+    const movedSection = `## Final Summary\n${synthesisText}\n\n`;
+    const restructured = header + movedSection + chronologicalTail;
+
+    // Tripwire: reconstruct each part straight back out of `restructured`
+    // and require it to match byte-for-byte. This isn't redundant with the
+    // construction above — it's an independent assertion that catches a
+    // future refactor of this function breaking its own invariant, which a
+    // silent "trust the concatenation" would not.
+    const rebuiltHeader = restructured.slice(0, header.length);
+    const rebuiltMoved = restructured.slice(header.length, header.length + movedSection.length);
+    const rebuiltTail = restructured.slice(header.length + movedSection.length);
+    if (rebuiltHeader !== header || rebuiltMoved !== movedSection || rebuiltTail !== chronologicalTail) {
+      return { ok: false, reason: 'tripwire failed: reconstructed content does not match the expected structure' };
+    }
+
+    return { ok: true, restructured };
+  }
+
   // ── Markdown -> RTF (G5, no-Obsidian .doc export) ────────────────────────
   // RTF is 7-bit ASCII; every character outside it (all of CJK, full-width
   // punctuation, curly quotes, emoji) MUST go through a \uN escape or Word
@@ -855,5 +909,6 @@
     rebuildContextFromSegments,
     markdownToRtf,
     buildWavFile,
+    restructureFinalSummaryToTop,
   };
 });
