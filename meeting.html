@@ -1824,7 +1824,7 @@
       // that needs it — see TRANSCRIPT_IS_DATA's other call sites, which are
       // all continuing an ordinary prose sentence, not a list).
       const actionsInstruction = curatedActions.length
-        ? ` For the **Action Items** section, use exactly this curated list of action items (rephrase minimally for clarity, do not drop any, do not add any of your own):\n${curatedActions.map(a => '- ' + a).join('\n')}\n`
+        ? ` For the **Action Items** section, use exactly this curated list of action items (rephrase minimally for clarity, do not drop any, do not add any of your own) — but still shape each one into the what — owner — due date structure above, adding the "[owner: unassigned]"/"[no date]" placeholders where the curated text itself doesn't already state one, rather than leaving it out:\n${curatedActions.map(a => '- ' + a).join('\n')}\n`
         : ' No action items were curated for this meeting — still include the **Action Items** heading with a single bullet "- [None recorded]", same as any other empty section.';
       const messages = [
         {
@@ -1840,7 +1840,7 @@
             + '**Discussed (not decided)** — topics raised and debated where no agreement was reached. Anything you were tempted to put under Decisions but cannot point to an explicit agreement for goes HERE.\n'
             + '**Action Items** (one bullet each: what — owner — due date)\n'
             + '**Open Questions** — raised and still unresolved.\n'
-            + 'Never invent an owner, a date, or an agreement. Where an owner is not named write "[owner: unassigned]"; where a due date is not stated write "[no date]". If a section genuinely has no content, still include the heading with a single bullet "- [None recorded]".\n'
+            + 'Never invent an owner, a date, or an agreement. Where an owner is not named write "[owner: unassigned]"; where a due date is not stated write "[no date]" — these two placeholder strings stay in English exactly as written even when the rest of the note is in another language, so they stay a fixed, greppable marker rather than a translated phrase that varies by language. If a section genuinely has no content, still include the heading with a single bullet "- [None recorded]".\n'
             + 'Use short plain language. Wrap key terms in **double asterisks**. '
             + template + ' '
             + roleSummaryInstruction()

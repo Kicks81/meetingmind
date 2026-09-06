@@ -113,14 +113,18 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   action item was reading as part of the instructions) — added a trailing `\n` after the
   bullet list; the other `TRANSCRIPT_IS_DATA` call sites are untouched since they
   continue an ordinary prose sentence, not a list.
-- [ ] **A3. Action items do not reliably carry an owner.** The prompt asks for
-  `what — owner — due`, but the curated list is injected as free text with *"rephrase
-  minimally"*. Fix in the **final-synthesis prompt only**. Do NOT restructure
-  `detectActionItems`' output: `actionKey`/`dismissedActions` keys derive from the whole
-  action string, so changing the format resurfaces every dismissed false positive across
-  a restore, breaking the D17 guarantee. Also pin the placeholders to English —
-  `languageInstruction` would otherwise emit `[负责人：未分配]` on a zh meeting and make
-  the exact strings CONTRACT.md names ungreppable.
+- [x] **A3. Action items do not reliably carry an owner.** The prompt asked for
+  `what — owner — due`, but the curated list was injected as free text with *"rephrase
+  minimally"* and nothing telling the model that instruction still had to end in the
+  owner/due structure — so it often didn't. `actionsInstruction`'s curated-list branch
+  now explicitly says to still shape each curated item into what/owner/due, adding the
+  placeholders when the curated text doesn't already state one. Fixed in the
+  **final-synthesis prompt only** — `detectActionItems`' own output format is untouched
+  (`actionKey`/`dismissedActions` keys derive from the whole action string; changing that
+  format would resurface every dismissed false positive across a restore, breaking D17).
+  Also pinned `[owner: unassigned]`/`[no date]` to stay in English exactly as written
+  regardless of the output-language selection, so `outputLanguageInstruction` can't turn
+  them into `[负责人：未分配]` on a zh meeting and break CONTRACT.md's exact-string greps.
 - [ ] **A4. The 4-section record is buried at the bottom of the note.** Export is
   chronological `## Segment N` blocks and the final synthesis is just another block
   inside the *last* one. Moving it to the top needs a full-note overwrite in the most
