@@ -981,6 +981,10 @@
         // Suggested cards have no .qa-answer element (nothing to answer) —
         // optional-chain so autosave doesn't throw on those.
         h: el.querySelector('.qa-answer')?.innerHTML || '',
+        // Raw markdown, same rationale/pattern as snapSummary's `m` — additive
+        // and optional, does NOT bump snap.v. Absent on older snapshots, which
+        // falls back to textContent (see summaryMarkdown).
+        m: el.querySelector('.qa-answer')?.__md || '',
         e: el.dataset.obsidianExported ? 1 : 0,
         // Suggested-question metadata (D32/E9) — MUST survive a restore, or a
         // reload turns a never-asked suggestion into what exports as a real
@@ -1189,6 +1193,9 @@
         el.className = 'qa-card';
         el.innerHTML = `<div class="qa-question">${escapeHtml(s.q)}</div><div class="qa-answer">${MeetingCore.sanitizeStoredHtml(s.h)}</div>`;
         const answerEl = el.querySelector('.qa-answer');
+        // Absent on snapshots written before the markdown stash existed — then
+        // summaryMarkdown() falls back to textContent, as it did before.
+        if (s.m) answerEl.__md = s.m;
         const restoredAnswerLang = MeetingCore.dominantLanguage(answerEl.textContent);
         answerEl.lang = restoredAnswerLang === 'mixed' ? 'zh' : restoredAnswerLang;
       }
@@ -2506,6 +2513,7 @@
       if (myEpoch !== clearEpoch) return;
 
       if (answer) {
+        answerEl.__md = answer; // keep the markdown for the export (see summaryMarkdown)
         answerEl.innerHTML = formatSummaryHtml(answer);
         const answerLang = MeetingCore.dominantLanguage(answer);
         answerEl.lang = answerLang === 'mixed' ? 'zh' : answerLang;
@@ -4072,12 +4080,18 @@
         const role = el.dataset.roleShort ? ` — ${el.dataset.roleShort} lens` : '';
         return `**Suggested question (not asked in the meeting)${role}:** ${q}`;
       }
+      // summaryMarkdown, NOT textContent — textContent strips the bullet
+      // markers and bold that formatSummaryHtml wrote into .qa-answer's
+      // innerHTML, and contributes no newlines between blocks, so the export
+      // used to receive one run-on line per answer (same defect V3 fixed for
+      // .summary-text).
       if (el.dataset.origin === 'asked-of-ai') {
-        return `**Asked of the assistant (not asked in the meeting):** ${q}\n**A:** ${el.querySelector('.qa-answer').textContent}`;
+        return `**Asked of the assistant (not asked in the meeting):** ${q}\n**A:** ${summaryMarkdown(el.querySelector('.qa-answer'))}`;
       }
       // Defensive fallback for any future unrecognized card shape — must
       // never default to looking like something said aloud in the meeting.
-      return `**Asked of the assistant (not asked in the meeting):** ${q}\n**A:** ${el.querySelector('.qa-answer')?.textContent || ''}`;
+      const answerEl = el.querySelector('.qa-answer');
+      return `**Asked of the assistant (not asked in the meeting):** ${q}\n**A:** ${answerEl ? summaryMarkdown(answerEl) : ''}`;
     });
     // Deterministic, independent of generateFinalSynthesis()'s LLM call
     // (Part 4a) — the same curated, dismissal-aware list always reaches the

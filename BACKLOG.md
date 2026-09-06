@@ -21,12 +21,14 @@ known zh defect is open. Every text-logic change still needs zh/en/mixed fixture
   the `obsidian://`-URI and download fallbacks have no filesystem read access to probe
   against, so those paths are unchanged. Found while fixing V2; pre-existing and
   unrelated to that change.
-- [ ] **`.qa-answer` exports as run-on text.** Identical defect to the one V3 fixed for
-  summaries: the export reads `.qa-answer.textContent`, but the element holds
-  `formatSummaryHtml` output, so bullets and bold are stripped and no newlines survive
-  between blocks. Fix the same way — stash the raw markdown at generation time and read
-  it through a `summaryMarkdown`-style helper (see DEVELOPMENT.md D33). Add `m` to
-  `snapQA` as an additive optional field; do NOT bump `snap.v`.
+- [x] **`.qa-answer` exports as run-on text.** Identical defect to the one V3 fixed for
+  summaries: the export read `.qa-answer.textContent`, but the element holds
+  `formatSummaryHtml` output, so bullets and bold were stripped and no newlines survived
+  between blocks. Fixed the same way — `answerQuestion()` now stashes the raw markdown
+  on `answerEl.__md` at generation time, the export reads it through the existing
+  `summaryMarkdown()` helper, and `snapQA`/its restore path carry an additive optional
+  `m` field (mirrors `snapSummary`'s `m`) so a reloaded meeting still exports its Q&A
+  answers with headings/bullets intact — `snap.v` was NOT bumped.
 - [x] **E9. Suggested questions no longer export as if they were asked.** Role-lens
   suggestions are `.qa-card`s, so the Obsidian export wrote them as `**Q:**` —
   indistinguishable from questions actually asked, i.e. fabricated meeting content.
