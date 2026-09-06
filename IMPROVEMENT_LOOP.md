@@ -10,24 +10,30 @@ verified, always committed, so quality ratchets upward and never regresses.
   Claude self-paces and keeps taking the top backlog item until stopped.
 
 ## One iteration
-1. **Pick** — take the top unchecked item in [BACKLOG.md](BACKLOG.md) (P0 before P1, etc.).
+1. **Check the last export** — open the most recently exported real meeting note
+   in the vault and confirm it is actually complete (all expected sections
+   present — TL;DR, Decisions, Discussed, Action Items, Open Questions per the
+   final-synthesis template; nothing obviously truncated or missing) before
+   starting the next backlog item. This catches export regressions before they
+   compound across several more iterations.
+2. **Pick** — take the top unchecked item in [BACKLOG.md](BACKLOG.md) (P0 before P1, etc.).
    If an item is blocked (needs the user, an API key, or a design decision), note why
    next to it and take the next one.
-2. **Implement** — smallest change that fully solves the item. Respect CLAUDE.md
+3. **Implement** — smallest change that fully solves the item. Respect CLAUDE.md
    constraints (no build step, relay stays a dumb pipe, CJK-aware text handling).
-3. **Verify** — this gate is what makes the loop safe:
+4. **Verify** — this gate is what makes the loop safe:
    - Run `node evals/run.mjs` (zh / en / mixed fixtures). All checks must pass.
    - If the change touches text processing, ADD fixtures covering it — in all three
      language modes — before considering it done.
    - If the change touches UI/audio, open meeting.html and check it loads with no
      console errors (audio-path changes additionally need a manual mic test —
      flag those for the user instead of pretending they're verified).
-4. **Commit** — one commit per item, message `<item-id>: <summary>` (e.g. `Z1: CJK
+5. **Commit** — one commit per item, message `<item-id>: <summary>` (e.g. `Z1: CJK
    question detection`).
-5. **Update the backlog** — move the item to Done with the commit hash; append any
+6. **Update the backlog** — move the item to Done with the commit hash; append any
    new issues discovered while working (with tier). This step is what makes the loop
    *continuous*: the backlog never empties, it re-prioritizes.
-6. **Re-audit trigger** — after every 5 completed items, or whenever P0+P1 are empty,
+7. **Re-audit trigger** — after every 5 completed items, or whenever P0+P1 are empty,
    run a fresh audit pass: compare against Granola's current feature set, review new
    BytePlus/OpenRouter capabilities, and refill the backlog.
 
@@ -43,7 +49,7 @@ verified, always committed, so quality ratchets upward and never regresses.
 Checklist to re-score at each re-audit:
 - [x] Live transcription (Granola: yes) — plus live streaming display Granola lacks
 - [x] Live rolling summaries (Granola: post-meeting only)
-- [x] In-meeting auto Q&A with personal-vault RAG (Granola: no)
+- [x] Manual Q&A + proactive role-question suggestions, both vault-RAG-backed (Granola: no)
 - [x] Chinese + English + code-switching, end to end (Granola: weak — our key edge)
 - [x] Post-meeting structured synthesis w/ action items (Granola: yes — parity)
 - [ ] User notes merged with transcript (Granola: yes — we're behind)

@@ -633,10 +633,83 @@
     return lines.join('\n');
   }
 
+  // Buffers partial SSE lines across chunk boundaries. When a data: line's
+  // trailing \n hasn't arrived yet, splitting eagerly would feed a truncated
+  // fragment to JSON.parse, which throws silently and loses that chunk of the
+  // response forever. Holding back the last element until a newline confirms it
+  // is complete prevents this silent data loss.
+  function parseSseChunks(residual, newText) {
+    var combined = residual + newText;
+    var parts = combined.split('\n');
+    // Last element has no guaranteed trailing newline — hold it as residual
+    var newResidual = parts.pop();
+    return { completeLines: parts, residual: newResidual };
+  }
+
+  // ── Clear-confirm helper ─────────────────────────────────────────────────
+  // clearAll() used to wipe everything unconditionally. Pure decision logic
+  // (what to say, and whether to say anything at all) lives here so it's
+  // testable without a DOM; the confirm() call itself stays in meeting.html.
+  function shouldConfirmClear(segN, sumN) {
+    if (segN === 0 && sumN === 0) return null;
+    return (
+      'This meeting has ' + segN + ' segment(s) and ' + sumN +
+      ' summary block(s) not yet saved to your vault. Clear anyway?'
+    );
+  }
+
+  // ── Export tri-state decision ───────────────────────────────────────────
+  // A bare boolean return from the export path conflated "nothing left to
+  // export" with "export was blocked/declined" — both looked like `false` to
+  // addToObsidian(), which then offered to destructively re-write (and wipe
+  // the export ledger for) a meeting that was never actually exported. This
+  // makes the three outcomes explicit and checkable.
+  function determineExportStatus({ wroteContent, blocked, blockedReason }) {
+    if (wroteContent) return { status: 'exported' };
+    if (blocked) return { status: 'blocked', reason: blockedReason || 'Export was blocked or declined' };
+    return { status: 'nothing-pending' };
+  }
+
+  // ── Full-meeting source selection (D37) ─────────────────────────────────
+  // The capped meetingContext is right for the cheap rolling summary prompt,
+  // but "whole meeting" reads (final synthesis, Q&A, role-question
+  // suggestions) need the uncapped consolidated source instead, falling back
+  // to the raw transcript only while no consolidated content exists yet.
+  function pickFullMeetingSource(consolidated, transcript) {
+    const c = (consolidated || '').trim();
+    if (c) return c;
+    return (transcript || '').trim();
+  }
+
+  // Output language is a user choice, not derived from the meeting's speech.
+  // Default to English so an unknown/missing selection never silently drops
+  // language pinning (the pre-Z4 behavior this setting replaces).
+  function outputLanguageInstruction(selection) {
+    if (selection === 'zh') {
+      return 'Reply in Chinese (中文), even if the meeting itself is in another language or code-switches. ';
+    }
+    return 'Reply in English, even if the meeting itself is in another language or code-switches. ';
+  }
+
+  // ── Rebuild transcript accumulators from live DOM (A6) ───────────────────
+  // Rebuild a single context string from live DOM segment texts, matching the
+  // join separator that live transcript ingestion uses (verified against the
+  // `finalTranscript += ' ' + text` call site) — DOM-as-source-of-truth
+  // (D33/V3 precedent) so corrections/deletions propagate to the
+  // finalTranscript/meetingContext accumulators that LLM prompts actually read.
+  // Live ingestion's `finalTranscript += ' ' + text` starting from an empty
+  // string technically prepends a space before the very first segment, while
+  // `segments.join(' ')` does not — but every consumer of the rebuilt string
+  // calls `.trim()` on it, so this difference is inconsequential, not a bug.
+  function rebuildContextFromSegments(segments) {
+    return segments.join(' ');
+  }
+
   return {
     parseSpeakerSplit,
     dominantLanguage,
     languageInstruction,
+    outputLanguageInstruction,
     applyCorrections,
     normalizeVaultName,
     extractVaultFolders,
@@ -675,6 +748,11 @@
     ASR_TRANSITIONS,
     isValidAsrTransition,
     nextAsrState,
+    parseSseChunks,
     formatDiagnosticsDump,
+    shouldConfirmClear,
+    determineExportStatus,
+    pickFullMeetingSource,
+    rebuildContextFromSegments,
   };
 });

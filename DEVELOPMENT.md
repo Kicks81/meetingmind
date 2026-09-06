@@ -272,7 +272,7 @@ All LLM call sites (rolling summary, final synthesis, Q&A answers) wrap streamin
 calls in try-catch-finally: request failures / mid-stream network drops / JSON parse
 errors are caught, never propagated as unhandled rejections. Failed text batches are
 re-queued to `pendingText` so they're covered by the next summary update. Fire-and-
-forget calls (detectAndAnswerQuestions, generateSummary) have `.catch(err =>
+forget calls (detectActionItems, maybeSplitSpeakers, generateSummary) have `.catch(err =>
 console.error(...))` guards. The spinner is always cleared in `finally` blocks, even
 on failure. Errors are shown to the user via `flashStatusError()` (visible in the
 status bar for 4s), not just logged. The philosophy: a flaky network or slow API must
@@ -332,8 +332,11 @@ jank, decoupling audio timing from UI sluggishness entirely.
    mic audio on the audio thread and buffers it.
 2. Main thread polls the buffer via `port.postMessage` and sends complete frames to
    the ASR; no longer blocks on mic reads.
-3. Frame transmission timing is now independent of main-thread load (autosave, DOM
-   growth, LLM streaming, GC).
+3. Only raw audio *sample capture* (reading mic samples into a buffer) moved off the
+   main thread. Chunk transmission (gzip via `CompressionStream` + `ws.send()` in
+   `sendAudioChunk`) still runs on the main thread once the worklet hands off a
+   completed chunk — this is not a full elimination of main-thread coupling, but
+   capture stalls under main-thread load are real and meaningfully reduced.
 4. The Web Audio graph topology stays the same; only the callback mechanism changed.
 
 **Verification:** Live-mic test confirmed audio flows smoothly through long meetings
@@ -341,9 +344,10 @@ jank, decoupling audio timing from UI sluggishness entirely.
 costs from D13 (unbounded meetingContext, autosave re-serialization) plus this
 structural fix together eliminate the ~1hr transcription delay observed in practice.
 
-**Backward compatibility:** AudioWorkletNode is available in all modern browsers
-(Chrome 66+); older fallback to ScriptProcessorNode is not provided (users on old
-browsers must upgrade). The audio pipeline is otherwise unchanged and transparent to
+**Backward compatibility:** `createCaptureNode()` DOES provide a ScriptProcessorNode
+fallback for browsers where `audioContext.audioWorklet` is unavailable or `addModule`
+fails; `currentDiagState()` reports `captureMode` as `"worklet"` or `"fallback
+(ScriptProcessorNode)"`. The audio pipeline is otherwise unchanged and transparent to
 the rest of the app.
 
 ### D23. ASR connection state machine — single source of truth (S1, completed 2026-07-10)
@@ -398,16 +402,24 @@ instead of "check the console logs").
 ### D25. Relay localhost-only binding (E1, completed 2026-07-10)
 Hardened relay.js to bind exclusively to `127.0.0.1` (not `0.0.0.0`) to prevent
 network exposure of the BytePlus ASR proxy. **Why this matters:** The relay holds
-the user's BytePlus API key (set via command-line env var `BYTEPLUS_KEY`) and forwards
-opaque frames to/from the ASR service (D2). If the relay were reachable from other
+the user's BytePlus API key, sent by the browser in the first WebSocket message as JSON
+(`{ apiKey, mode: ASR_MODE, resourceId: ASR_RESOURCE_ID }`) and forwarded per connection;
+the relay never reads the key from an environment variable, nor persists its own copy.
+It forwards opaque frames to/from the ASR service (D2). If the relay were reachable from other
 machines on the network, a compromised peer could intercept frames, extract metadata,
 or proxy malicious requests. Localhost-only binding (enforced at both the HTTP server
 and WebSocket listener) ensures only the local Chrome browser can reach it.
 
 Also implemented:
 1. **Port-conflict detection**: If the default port (8765) is already in use, the relay
-   tries the next available port in a range, or fails with a clear error message (not
-   silent degradation). start.bat logs the actual port so the user can navigate to the
+   exits immediately with an error naming the conflicting port and instructing the user
+   to pass a different port manually (`node relay.js --port <n>`); it does not auto-select
+   an alternate port. (An earlier version accepted a bare positional port argument —
+   e.g. `node relay.js 8766` — but that silently absorbed any stray extra word on the
+   command line as a port number, landing the user on an unexpected origin with an
+   empty localStorage. It now requires the explicit `--port` flag; meeting.html also
+   surfaces the current `window.location.origin` in the UI so a wrong port is visible
+   immediately.) start.bat logs the actual port so the user can navigate to the
    correct localhost URL.
 2. **Backpressure visibility**: Logs `socket.bufferedAmount` (bytes queued in the browser's
    send buffer) every 5s while recording. If it grows unbounded, it signals that the relay
@@ -453,7 +465,7 @@ plaintext and compromised. Encryption with a user-supplied passphrase mitigates 
 - **Plaintext export** (user opt-in for encryption = unchecked): standard JSON, backward
   compatible with existing Load Config workflows.
 - **Encrypted export** (user checks "Encrypt with passphrase"): prompt for a passphrase,
-  derive a key using `crypto.subtle.deriveBits` (PBKDF2, 100k iterations, random salt),
+  derive a key using `crypto.subtle.deriveBits` (PBKDF2, 200k iterations, random salt),
   and encrypt the JSON using `AES-GCM`. The output file contains:
   ```
   {
@@ -478,42 +490,30 @@ plaintext and compromised. Encryption with a user-supplied passphrase mitigates 
 3. **Scoped to export/import only**: localStorage still holds plaintext (D9 is unchanged);
    encryption is only for file durability. Full localStorage encryption (backlog item) is
    out of scope here.
-4. **Constants hardcoded**: PBKDF2 iterations (100k, matches OWASP recommendations),
+4. **Constants hardcoded**: PBKDF2 iterations (200k, matches OWASP recommendations),
    salt/IV sizes (16/12 bytes, standard for GCM), AES-256-GCM algorithm.
 
-### D27. Relay diagnostics — observability for troubleshooting (E4, completed 2026-07-10)
+### D27. Relay diagnostics drawer — observability for troubleshooting (E4, completed 2026-07-10)
 Connection failures, ASR stalls, and frame delivery issues are hard to diagnose without
-visibility into relay state. E4 adds a **Diagnostics pane** (Settings button → Diagnostics tab)
-to meeting.html that surfaces relay state and frame history:
+visibility into relay state. E4 adds a lightweight, always-visible **diagnostics drawer**
+(🔧 button in the header, `id="diagToggle"`, `onclick="toggleDiagnostics()"`) to
+meeting.html — there is no Settings gate; it is directly reachable at all times.
 
-1. **Relay health dashboard** (Diagnostics pane, always visible): live display of WebSocket state
-   (connecting / connected / closed), buffered bytes, frames sent/received counts, relay uptime,
-   and detected backpressure. Colors (green/yellow/red) indicate health status.
+`currentDiagState()` shows live scalar counters: ASR state, socket readyState,
+bufferedAmount, seconds since last frame, reconnect count, capture mode (worklet vs.
+ScriptProcessorNode fallback), mic/system track state, audioCtx state,
+summary/question/action call and failure counts, summary queue state, last autosave
+result, snapshot bytes/budget, and export ledger chunk count — refreshed every 2s while
+the drawer is open or the meeting is recording.
 
-2. **Frame inspection**: circular buffer of the last 50 parsed frames (UTC timestamp,
-   payload size, MSG_TYPE, parse success/error). Useful for "why did the relay reject
-   my frame?" debugging without a full packet capture. Frames are tagged with error
-   messages if they fail (truncated header, invalid gzip, JSON parse error).
-
-3. **Connection timeline**: immutable log of all major events (WebSocket open, close,
-   reconnect initiated, backpressure detected) with UTC timestamps and durations. Users
-   can correlate "I noticed the audio stopped at 3:22 PM" with "relay closed at 3:22:15,
-   reconnected at 3:22:40". Timeline is kept in memory during session, visible in the pane.
-
-4. **Export diagnostics log**: button to download a plaintext report of the full session's
-   relay events + frame stats (counts by MSG_TYPE, error rates, average frame size, peak
-   buffering). For sharing with support or troubleshooting.
-
-5. **Error surfacing**: ASR failures (auth errors, timeout, quota exceeded) and frame
-   decode errors are now surfaced in the Diagnostics pane status line, not silent
-   console warnings. Connection state changes (reconnect, backpressure) trigger subtle
-   but visible log entries.
+A "Copy diagnostics" button (`copyDiagnostics()`) writes a text dump to the clipboard
+only (`navigator.clipboard?.writeText(dump)`); no file download is provided.
 
 **Design rationale:** Failures are the most important events to make visible — silent
-failures defeat diagnostics. The pane is collapsible (Settings → Diagnostics tab) so
-normal users don't see it, but on-call engineers or the user during troubleshooting can
-open it and immediately see "why did the relay drop the connection at this timestamp?"
-without needing console access or asking the user to paste logs. No new dependencies.
+failures defeat diagnostics. The drawer is a single button away so on-call engineers or
+the user during troubleshooting can open it and immediately see current ASR/audio/LLM/
+storage health without needing console access or asking the user to paste logs. No new
+dependencies.
 
 ### D28. Direct vault writes replace the obsidian:// hand-off (E5, 2026-08-02)
 The `obsidian://new` export was losing most of every meeting, silently. Chrome
@@ -779,6 +779,63 @@ Still outstanding from this pass: `.qa-answer` has the identical `textContent` d
 (backlog), and the 4-section record is still buried at the bottom of the note rather
 than at the top (backlog A4).
 
+### D34 — SSE streaming decoder boundary bugs
+
+**Problem:** `streamIntoElement()` had two independent bugs: (1) `TextDecoder.decode()` was
+called without `{stream: true}`, so multi-byte UTF-8 sequences (any CJK character = 3 bytes)
+split across two `reader.read()` boundaries produced U+FFFD replacement characters instead of
+the original text; (2) `chunk.split('\n')` eagerly processed the last array element even when
+it lacked a trailing `\n`, causing `JSON.parse` to silently throw on a truncated fragment that
+was then permanently lost. Both bugs affected every streaming LLM call site (rolling summary,
+final synthesis, Q&A, consolidated summary, role suggestions).
+
+**Fix:** Added `{stream: true}` to `TextDecoder.decode()`. Extracted the line-splitting decision
+into a new pure function `parseSseChunks()` in `core.js` using a residual-buffer pattern: the
+last element from each `split('\n')` is held back and prepended to the next chunk, so only
+newline-terminated lines are processed. On stream end, the residual is flushed through the same
+handling. Three eval fixtures cover: CJK byte-split recovery, incomplete-line buffering, and
+normal-case regression.
+
+**Files:** `core.js`, `meeting.html`, `evals/run.mjs`
+
+### D35 (2026-09-06): Auto-Q&A claim retraction — proactive suggestions are the surviving feature
+Automatic spoken-question detection-and-answering was tried and removed because it
+produced too many irrelevant detections in real meetings. The feature that actually
+serves the original intent — proactive, role-relevant question suggestions via
+`suggestRoleQuestions()`/`ROLE_LENSES` (D29), exported under an explicit "not asked in
+the meeting" label (D32) — already exists and is not changed by this task. This entry
+corrects stale claims elsewhere (CLAUDE.md, CONTRACT.md, IMPROVEMENT_LOOP.md, and D14
+above) that described automatic in-meeting Q&A as shipped.
+
+### D36 (2026-09-06): Output-language selector supersedes Z4's automatic speech-matching for note BODY content
+`meeting.html` now exposes an `outputLanguageSelect` control (English default / Chinese)
+persisted as `meetingmind_output_language`, and every prompt-construction call site that
+previously appended the unconditional `ENGLISH_ONLY` constant now calls
+`MeetingCore.outputLanguageInstruction(...)`. The `dominantLanguage()`/`languageInstruction()`
+mechanism remains for note TITLE generation only (`suggestMeetingTitle()`, unchanged); body
+language is a user choice because some users want Chinese notes and others want English
+regardless of the meeting's spoken language.
+
+### D37 (2026-09-06): Wire the consolidated source into final synthesis, Q&A, and role-question prompts
+`generateFinalSynthesis()`, `answerQuestion()`, and `suggestRoleQuestions()` each read
+from `meetingContext`, which is capped at `MEETING_CONTEXT_CHAR_CAP` (6000 chars,
+tail-kept) right after every append (D13). That cap is correct for the cheap ROLLING
+summary prompt in `runGenerateSummary` (unchanged by this task), but these three call
+sites ask "what has this whole meeting been about" — a 6000-char tail of a long
+meeting is a tiny fraction of it. Each also applied a dead `.slice(-12000)`/`.slice(-6000)`
+on top of the already-≤6000-char value, a no-op left over from before the cap existed.
+
+All three now read from a new `currentFullMeetingSource()` helper in `meeting.html`,
+which prefers `consolidatedSource()` (D30) — the uncapped, deduplicated view built from
+every rolling summary block — falling back to the raw, uncapped `finalTranscript`
+accumulator when the consolidated source is empty (early in a short meeting, before
+enough rolling summaries exist to populate it; D30 only rewrites the consolidated
+block every 4th summary). The "which one wins" decision is pure text logic, so it is
+extracted to `core.js` as `pickFullMeetingSource(consolidated, transcript)` with eval
+coverage, rather than living only inline in `meeting.html`.
+
+References: D13 (meetingContext cap), D30 (consolidated block mechanics).
+
 ## 4. Known limitations / sharp edges (as of 2026-08-18)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
@@ -787,9 +844,10 @@ than at the top (backlog A4).
 - zh questions ending without `？` (…吗 punctuated with `。` by the ASR) are missed
   by regex detection; acceptable so far, LLM-side catch is a backlog option.
 - `meetingContext` is capped at `MEETING_CONTEXT_CHAR_CAP` (6000 chars, tail-kept) —
-  see D13. The consequence is that `generateFinalSynthesis` reads only the TAIL of a
-  long meeting, which matters more now that the final note is the definitive record.
-  (This line previously claimed the growth was unbounded, contradicting D13.)
+  see D13. That cap still governs the live ROLLING summary prompt in
+  `runGenerateSummary`. `generateFinalSynthesis`, `answerQuestion`, and
+  `suggestRoleQuestions` no longer read the capped tail for their own "whole
+  meeting" context — they read the uncapped consolidated source instead (D37).
 - `.qa-answer` still exports via `.textContent`, so multi-bullet answers arrive in the
   vault as one run-on line — the same defect V3 fixed for summaries (see D33).
 - One meeting at a time; no history browser (autosave holds only the latest session).

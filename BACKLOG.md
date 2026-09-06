@@ -118,6 +118,7 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   (~line 2320), or promote it into the diagnostics drawer (E4) if it is still useful.
 
 ## Done
+- [x] D34 — SSE streaming decoder boundary bugs: fix UTF-8 multi-byte corruption and silent line-dropping at chunk boundaries in `streamIntoElement`; extract `parseSseChunks` pure function to `core.js`
 - [x] **V3. Export carries markdown again, not run-on text.** `buildObsidianChunkMarkdown`
   read `.summary-text.textContent`, but that element holds `formatSummaryHtml` output —
   `- ` markers stripped, `**bold**` turned into `<mark>`, and `textContent` adds no
@@ -316,8 +317,12 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   is the no-picker path, and its permission now persists too. (commit `U1:`)
 - [x] **Z4. Output language pinned to the speech.** dominantLanguage() classifies each
   batch/question/title source as zh / en / mixed by CJK-vs-Latin share (≥70% zh, ≤30%
-  en, else mixed); the matching instruction is appended to summary, Q&A, and title
-  prompts. P0 is now empty — Chinese/English correctness backlog cleared. (commit `Z4:`)
+  en, else mixed); the matching instruction is appended to the title prompt via
+  `languageInstruction()` (unchanged). Note BODY output language (summary, synthesis,
+  action items, Q&A, suggested questions) is now the user-selectable `outputLanguageSelect`
+  setting (default English) per D36, not automatic speech-matching — some users want
+  Chinese notes and others want English regardless of the meeting's spoken language.
+  P0 is now empty — Chinese/English correctness backlog cleared. (commit `Z4:`)
 - [x] **Z3. Chinese vault search.** Query tokenizer now emits CJK character bigrams
   (function-char bigrams like 的/是/谁 filtered) alongside Latin words; Latin terms
   score 2×. Chinese questions now retrieve zh vault notes; mixed queries rank the

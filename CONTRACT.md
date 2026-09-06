@@ -5,8 +5,9 @@ Handed verbatim to the auditor on every pass. When a rule changes, change it her
 ## Audience and purpose
 
 A single-file, local, no-build web app that live-transcribes meetings (mic +
-system audio), produces rolling summaries, answers questions asked in the
-meeting against an Obsidian vault, and exports notes into that vault.
+system audio), produces rolling summaries, answers questions the user
+types against an Obsidian vault, proactively suggests role-relevant
+questions, and exports notes into that vault.
 
 The reader of its output is a transformation lead at InCorp_SG reviewing meeting
 notes days or weeks later, when they no longer remember the meeting. A note that
@@ -61,7 +62,7 @@ that is correct only for English fails this contract.
   synthesis does. Deliberate — mid-meeting nothing is settled yet.
 - The `obsidian://` export path remains as a `file://` fallback and is still
   limited to one launch per user gesture. Superseded by direct vault writes
-  (D25); not removed, because `file://` users have nothing else.
+  (D28); not removed, because `file://` users have nothing else.
 - Visual audit mode is unverified on the OpenRouter provider; substance mode
   only for this project.
 - Speaker labels are A/B heuristics, not true diarization.

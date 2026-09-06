@@ -2,8 +2,9 @@
 
 ## What this is
 A local, single-file web app that live-transcribes meetings (mic + system audio),
-generates rolling summaries, auto-answers questions asked in the meeting (with
-Obsidian-vault RAG), and exports notes into Obsidian. Goal: **exceed Granola's
+generates rolling summaries, offers proactive
+role-relevant question suggestions, answers questions the user types, and
+exports notes into Obsidian. Goal: **exceed Granola's
 standard**, with first-class **Chinese + English (incl. code-switching)** support.
 
 ## Architecture

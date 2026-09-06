@@ -617,6 +617,52 @@ check('meeting.html restore validates the snapshot before touching the page', ht
 check('meeting.html restore sanitizes stored summary/Q&A HTML before re-injection', html.includes('MeetingCore.sanitizeStoredHtml'), true);
 check('meeting.html snapshotState writes schema v2', /v:\s*2,/.test(html), true);
 
+// ── Dead-export tripwire — every core.js export must be referenced in meeting.html ──
+// extractQuestions is a deliberate exception: the automatic spoken-question-detection
+// feature it powered was removed (see D35) because it produced too many irrelevant
+// detections in practice, but the underlying pure function is kept exported and
+// eval-tested for potential future reuse. Do not allow-list anything else here without
+// a similarly explicit, verified justification — the point of this check is to catch
+// the NEXT phantom export, not paper over this one. (An earlier attempt at automatically
+// detecting "used internally within core.js" via substring matching was reverted: every
+// function's own declaration trivially contains the substring `name(`, so that approach
+// would have silently defeated this check for every function export, forever.)
+const deadExportAllowList = [
+  'extractQuestions', // removed feature (auto-Q&A), kept for potential future reuse — see D35
+  // Used internally by nextAsrState() (called from meeting.html) but not referenced by name
+  // directly in meeting.html — exported alongside nextAsrState so the eval suite can test
+  // transition validation directly and completely (D23). Verified by direct code inspection,
+  // not by an automated internal-usage heuristic.
+  'isValidAsrTransition', 'ASR_STATES', 'ASR_TRANSITIONS',
+  // Genuinely superseded, NOT used internally or externally: searchVault() calls
+  // latinTerms()/cjkBigrams() directly instead of tokenizeQuery(); trimSnapshotToByteBudget()
+  // reimplements trimSegmentsToByteBudget()'s logic inline instead of calling it. Kept only
+  // because their existing eval fixtures can't be deleted (D7's never-delete-a-fixture rule).
+  'tokenizeQuery', 'trimSegmentsToByteBudget',
+];
+// Most call sites use the `MeetingCore.name` form, but one destructures a batch
+// of names off MeetingCore up front (`const { a, b, ... } = MeetingCore;`) and
+// calls them bare afterward — that destructuring is itself a reference.
+const destructuredMatch = html.match(/const\s*\{([^}]+)\}\s*=\s*MeetingCore;/);
+const destructuredNames = destructuredMatch
+  ? destructuredMatch[1].split(',').map(s => s.trim()).filter(Boolean)
+  : [];
+const unreferencedExports = Object.keys(core).filter(name =>
+  !deadExportAllowList.includes(name) &&
+  !html.includes(`MeetingCore.${name}`) &&
+  !destructuredNames.includes(name)
+);
+check('every core.js export is referenced in meeting.html (except allow-listed exceptions)',
+  unreferencedExports, []);
+
+// ── Doc/code drift tripwire — SUGGEST_EVERY_N_SUMMARIES must match D29's documented value ──
+// D29 (DEVELOPMENT.md) says proactive role-question suggestions run "every 3rd rolling
+// summary." Hardcoding 3 here (rather than regex-scraping D29's prose) is deliberately
+// simpler and more robust — if D29's wording changes, update this expected value to match.
+const suggestEveryNMatch = html.match(/const SUGGEST_EVERY_N_SUMMARIES = (\d+);/);
+check('SUGGEST_EVERY_N_SUMMARIES matches D29\'s documented "every 3rd" value',
+  suggestEveryNMatch ? parseInt(suggestEveryNMatch[1], 10) : null, 3);
+
 // ── Summary column split + one-click export (V1/V2/V3) ─────────────────────
 // These are grep guards on decisions that look like tidy-up targets but are
 // load-bearing. Each one broke, or would have broken, something real.
@@ -929,6 +975,165 @@ check('meeting.html: a localStorage note is present near the key inputs',
 check('formatDiagnosticsDump: missing fields render as n/a, not throw/undefined',
   /state: n\/a/.test(core.formatDiagnosticsDump({})),
   true);
+
+// ── parseSseChunks (D34) ───────────────────────────────────────────────────
+{
+  // CJK multi-byte char split across two decode() calls.
+  const encoder = new TextEncoder();
+  const fullLine = 'data: {"choices":[{"delta":{"content":"中文"}}]}\n';
+  const fullBytes = encoder.encode(fullLine);
+  const prefix = 'data: {"choices":[{"delta":{"content":"';
+  const splitAt = encoder.encode(prefix).length + 1; // splits inside 中's 3-byte UTF-8 sequence
+  const chunk1 = fullBytes.slice(0, splitAt);
+  const chunk2 = fullBytes.slice(splitAt);
+  const decoder = new TextDecoder();
+  const text1 = decoder.decode(chunk1, { stream: true });
+  const text2 = decoder.decode(chunk2, { stream: true });
+
+  const afterChunk1 = core.parseSseChunks('', text1);
+  check('parseSseChunks: CJK split across decode boundary — no premature line after chunk 1',
+    afterChunk1.completeLines, []);
+
+  const afterChunk2 = core.parseSseChunks(afterChunk1.residual, text2);
+  check('parseSseChunks: CJK split across decode boundary — line reconstructs uncorrupted after chunk 2',
+    afterChunk2.completeLines,
+    ['data: {"choices":[{"delta":{"content":"中文"}}]}']);
+  check('parseSseChunks: CJK split across decode boundary — residual drained',
+    afterChunk2.residual, '');
+}
+
+{
+  // SSE line split across two reads with no trailing newline in the first read.
+  const r1 = core.parseSseChunks('', 'data: {"choices":[{"delta":{"content":"hel');
+  check('parseSseChunks: incomplete line held as residual, not processed early',
+    { completeLines: r1.completeLines, residual: r1.residual },
+    { completeLines: [], residual: 'data: {"choices":[{"delta":{"content":"hel' });
+
+  const r2 = core.parseSseChunks(r1.residual, 'lo"}}]}\n');
+  check('parseSseChunks: held residual + next chunk reconstructs the full line',
+    { completeLines: r2.completeLines, residual: r2.residual },
+    { completeLines: ['data: {"choices":[{"delta":{"content":"hello"}}]}'], residual: '' });
+}
+
+check('parseSseChunks: normal single-read case unaffected (regression)',
+  core.parseSseChunks('', 'data: {"a":1}\ndata: {"b":2}\n'),
+  { completeLines: ['data: {"a":1}', 'data: {"b":2}'], residual: '' });
+
+// ── shouldConfirmClear ───────────────────────────────────────────────────
+check('shouldConfirmClear: both counts zero returns null (nothing to lose)',
+  core.shouldConfirmClear(0, 0), null);
+
+check('shouldConfirmClear: message includes both counts',
+  core.shouldConfirmClear(3, 2),
+  'This meeting has 3 segment(s) and 2 summary block(s) not yet saved to your vault. Clear anyway?');
+
+check('shouldConfirmClear: segments only',
+  core.shouldConfirmClear(5, 0),
+  'This meeting has 5 segment(s) and 0 summary block(s) not yet saved to your vault. Clear anyway?');
+
+check('shouldConfirmClear: summaries only',
+  core.shouldConfirmClear(0, 4),
+  'This meeting has 0 segment(s) and 4 summary block(s) not yet saved to your vault. Clear anyway?');
+
+// ── determineExportStatus ─────────────────────────────────────────────────
+check('determineExportStatus: content written → exported',
+  core.determineExportStatus({ wroteContent: true, blocked: false }),
+  { status: 'exported' });
+
+check('determineExportStatus: nothing pending → nothing-pending',
+  core.determineExportStatus({ wroteContent: false, blocked: false }),
+  { status: 'nothing-pending' });
+
+check('determineExportStatus: blocked with reason is preserved',
+  core.determineExportStatus({ wroteContent: false, blocked: true, blockedReason: 'Permission denied' }),
+  { status: 'blocked', reason: 'Permission denied' });
+
+check('determineExportStatus: blocked without reason falls back to default message',
+  core.determineExportStatus({ wroteContent: false, blocked: true }),
+  { status: 'blocked', reason: 'Export was blocked or declined' });
+
+check('determineExportStatus: wroteContent takes precedence over nothingPending (defensive)',
+  core.determineExportStatus({ wroteContent: true, blocked: false }),
+  { status: 'exported' });
+
+// ── outputLanguageInstruction ───────────────────────────────────────────────
+check('outputLanguageInstruction: en selection forces English',
+  core.outputLanguageInstruction('en'),
+  'Reply in English, even if the meeting itself is in another language or code-switches. ');
+
+check('outputLanguageInstruction: zh selection forces Chinese',
+  core.outputLanguageInstruction('zh'),
+  'Reply in Chinese (中文), even if the meeting itself is in another language or code-switches. ');
+
+check('outputLanguageInstruction: unknown selection defaults to English',
+  core.outputLanguageInstruction('bogus'),
+  'Reply in English, even if the meeting itself is in another language or code-switches. ');
+
+// ── pickFullMeetingSource (D37) ─────────────────────────────────────────────
+check('pickFullMeetingSource: prefers consolidated when present',
+  core.pickFullMeetingSource('hello', 'fallback'),
+  'hello');
+
+check('pickFullMeetingSource: falls back to transcript when consolidated is empty',
+  core.pickFullMeetingSource('', 'fallback'),
+  'fallback');
+
+check('pickFullMeetingSource: whitespace-only consolidated counts as empty',
+  core.pickFullMeetingSource('   ', 'fallback'),
+  'fallback');
+
+check('pickFullMeetingSource: null consolidated falls back to transcript',
+  core.pickFullMeetingSource(null, 'fallback'),
+  'fallback');
+
+check('pickFullMeetingSource: undefined consolidated falls back to transcript',
+  core.pickFullMeetingSource(undefined, 'fallback'),
+  'fallback');
+
+check('pickFullMeetingSource: consolidated present, transcript empty — consolidated wins',
+  core.pickFullMeetingSource('hello', ''),
+  'hello');
+
+check('pickFullMeetingSource: both empty — empty string',
+  core.pickFullMeetingSource('', ''),
+  '');
+
+check('pickFullMeetingSource: both whitespace-only — empty string',
+  core.pickFullMeetingSource('  ', '  '),
+  '');
+
+// ── rebuildContextFromSegments (A6) ─────────────────────────────────────────
+
+// en: matches live-ingestion join (space separator)
+check(
+  'rebuildContextFromSegments — en',
+  core.rebuildContextFromSegments([
+    'We shipped the release.',
+    'Who owns the AFO integration?',
+  ]),
+  'We shipped the release. Who owns the AFO integration?'
+);
+
+// zh: same join format; no extra CJK whitespace introduced beyond the
+// space separator that live ingestion already uses
+check(
+  'rebuildContextFromSegments — zh',
+  core.rebuildContextFromSegments([
+    '预算已经批了。',
+    '下一步谁来跟进？',
+  ]),
+  '预算已经批了。 下一步谁来跟进？'
+);
+
+// mixed: consistency with the same join rule regardless of script
+check(
+  'rebuildContextFromSegments — mixed',
+  core.rebuildContextFromSegments([
+    '关于AFO integration，现在谁负责跟进？',
+    'I will follow up by Friday.',
+  ]),
+  '关于AFO integration，现在谁负责跟进？ I will follow up by Friday.'
+);
 
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);

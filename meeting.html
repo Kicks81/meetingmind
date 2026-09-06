@@ -8,7 +8,9 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    /* Latin-first for UI chrome; CJK system fonts before generic fallback so Chinese
+       glyphs in mixed-language segments use a designed typeface. */
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif;
     background: #0f1117;
     color: #e1e4e8;
     height: 100vh;
@@ -641,10 +643,15 @@
       <option value="meta-llama/llama-3.1-8b-instruct">Llama 3.1 8B</option>
       <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
     </select>
+    <select id="outputLanguageSelect" title="Output language for notes and summaries">
+      <option value="en" selected>English</option>
+      <option value="zh">Chinese (中文)</option>
+    </select>
     <input class="api-input" type="password" id="apiKey" placeholder="OpenRouter API key (sk-or-...)" autocomplete="off">
     <input class="api-input" style="width:180px;" type="password" id="bytePlusKey" placeholder="BytePlus API key (ASR)" autocomplete="off">
     <span style="font-size:11px;opacity:.7;align-self:center;" title="Keys are kept only in this browser's localStorage for this origin — they are never sent anywhere except OpenRouter/BytePlus/your relay.">&#128274; keys stored in this browser's localStorage</span>
     <input class="api-input" style="width:150px;" type="text" id="relayUrl" placeholder="ws://localhost:8765" value="ws://localhost:8765">
+    <span id="originIndicator" style="font-size:11px;opacity:.75;align-self:center;" title="localStorage is scoped per origin (scheme+host+port) — landing on a different port than usual means a fresh, empty localStorage (no saved keys/corrections/settings). Check this matches the port you started relay.js with.">Origin: <span id="originValue"></span></span>
     <input class="api-input" style="width:130px;" type="text" id="obsidianVault" placeholder="Obsidian vault name">
     <input class="api-input" style="width:120px;" type="text" id="obsidianFolder" placeholder="Notes folder" value="Incorp Transformation Project/Meeting Notes" list="folderOptions" title="Where meeting notes are created inside the vault (a YYYY-MM subfolder is added automatically)">
     <datalist id="folderOptions"></datalist>
@@ -697,6 +704,38 @@
   <span>Obsidian export will need several clicks. Connect your vault folder once and the whole meeting exports in a single action.</span>
   <button type="button" onclick="connectVaultFolderFromHint()">Connect vault folder</button>
   <button type="button" onclick="dismissVaultHint()">Not now</button>
+</div>
+
+<!-- Persistent export-failure banner: stays visible until explicitly dismissed,
+     distinct from flashStatusError's 4-second auto-dismiss. -->
+<div id="exportFailureBanner" class="vault-hint-banner export-failure-banner"
+     style="display:none; background:#3d1f28; border:1px solid #f85149; color:#f0f0f0;
+            padding:10px 14px; border-radius:6px; margin-top:8px; position:relative;">
+  <span id="exportFailureBannerText" style="margin-right:8px;"></span>
+  <button id="exportFailureRetryBtn"
+          onclick="retryExport()"
+          style="margin-left:8px; padding:2px 10px; cursor:pointer;
+                 background:#da3633; color:#fff; border:none; border-radius:4px;">
+    Retry export
+  </button>
+  <button id="exportFailureDismissBtn"
+          onclick="dismissExportFailureBanner()"
+          style="position:absolute; top:6px; right:10px; background:none; border:none;
+                 color:#f0f0f0; font-size:16px; cursor:pointer;"
+          title="Dismiss">✕</button>
+</div>
+
+<!-- Persistent meeting-complete banner: same display-toggle pattern as
+     #exportFailureBanner above — stays visible until explicitly dismissed. -->
+<div id="meetingCompleteBanner" class="vault-hint-banner meeting-complete-banner"
+     style="display:none; background:#1f3d28; border:1px solid #3fb950; color:#f0f0f0;
+            padding:10px 14px; border-radius:6px; margin-top:8px; position:relative;">
+  <span id="meetingCompleteBannerText" style="margin-right:8px;"></span>
+  <button id="meetingCompleteDismissBtn"
+          onclick="dismissMeetingCompleteBanner()"
+          style="position:absolute; top:6px; right:10px; background:none; border:none;
+                 color:#f0f0f0; font-size:16px; cursor:pointer;"
+          title="Dismiss">✕</button>
 </div>
 
 <div class="main">
@@ -826,6 +865,19 @@
   let seenActions = new Set();      // keys of action items currently on screen
   let dismissedActions = new Set(); // keys the user deleted — never re-add
   let meetingContext = '';        // rolling plain-text of full meeting so far
+  // ── Clear-safety (Part 3) ─────────────────────────────────────────────
+  // Bumped by clearAll() so async work (summary/Q&A calls) already in flight
+  // when Clear is clicked can tell "this result is for a meeting that no
+  // longer exists" and discard itself instead of resurrecting stale content
+  // into the freshly-cleared state.
+  let clearEpoch = 0;
+  // Aborted and replaced by clearAll() on every clear so an in-flight
+  // OpenRouter fetch is actually cancelled, not just left to finish and have
+  // its result ignored by the epoch check above.
+  let currentClearController = new AbortController();
+  // Guards the autosave `_prev` snapshot copy (Part 2) to once per session —
+  // see autosave() below.
+  let prevSnapshotPreserved = false;
   // Serializes generateSummary calls so overlapping triggers (word-count +
   // silence-timer + stop-recording) can never interleave their streaming
   // output or their meetingContext/pendingText mutations — see C4.
@@ -972,6 +1024,16 @@
   let lastAutosaveResult = 'n/a';
   let lastAutosaveBytes = 0;
   function autosave() {
+    // Preserve whatever snapshot already exists exactly once per session,
+    // before this session's own ticks start overwriting AUTOSAVE_KEY. Without
+    // this, declining a restore-from-crash prompt still lets the very next
+    // 5-second tick clobber the declined snapshot — so there was no way back
+    // to "actually, restore that after all".
+    if (!prevSnapshotPreserved) {
+      const existing = localStorage.getItem(AUTOSAVE_KEY);
+      if (existing) localStorage.setItem(AUTOSAVE_KEY + '_prev', existing);
+      prevSnapshotPreserved = true;
+    }
     try {
       const snap = snapshotState();
       if (!snap.segments.length && !snap.summaries.length && !snap.qas.length && !snap.actions.length) return;
@@ -1022,7 +1084,13 @@
   }
 
   setInterval(autosave, 5000);
-  window.addEventListener('beforeunload', autosave);
+  window.addEventListener('beforeunload', (event) => {
+    autosave();
+    if (isRecording) {
+      event.preventDefault();
+      event.returnValue = ''; // the standard, cross-browser incantation — the actual displayed text is browser-controlled and cannot be customized
+    }
+  });
 
   function restoreFromAutosave() {
     let snap;
@@ -1064,6 +1132,9 @@
       // Absent on snapshots written before the markdown stash existed — then
       // summaryMarkdown() falls back to textContent, as it did before.
       if (s.m) el.querySelector('.summary-text').__md = s.m;
+      const textEl = el.querySelector('.summary-text');
+      const restoredLang = MeetingCore.dominantLanguage(textEl.textContent);
+      el.lang = restoredLang === 'mixed' ? 'zh' : restoredLang;
       if (s.e) el.dataset.obsidianExported = '1';
       addSummaryBlockControls(el);
       sPanel.appendChild(el);
@@ -1088,6 +1159,9 @@
         el = document.createElement('div');
         el.className = 'qa-card';
         el.innerHTML = `<div class="qa-question">${escapeHtml(s.q)}</div><div class="qa-answer">${MeetingCore.sanitizeStoredHtml(s.h)}</div>`;
+        const answerEl = el.querySelector('.qa-answer');
+        const restoredAnswerLang = MeetingCore.dominantLanguage(answerEl.textContent);
+        answerEl.lang = restoredAnswerLang === 'mixed' ? 'zh' : restoredAnswerLang;
       }
       if (s.e) el.dataset.obsidianExported = '1';
       qPanel.appendChild(el);
@@ -1148,6 +1222,15 @@
       invalidateSnap(el.closest('.transcript-segment')); // text is about to change — the cached autosave fragment for this segment is now stale
       el.textContent = MeetingCore.applyCorrections(el.textContent, corrections);
     }
+    // DOM is source of truth (D33/V3 precedent) — without this, a corrected
+    // mis-hearing stays wrong in finalTranscript/meetingContext even though
+    // the screen now shows the fix, so every LLM prompt built from those
+    // accumulators (summaries, Q&A, role questions) keeps reading the old text.
+    const segments = [...document.querySelectorAll('#transcriptPanel .transcript-segment.final .seg-text')].map(el => el.textContent);
+    finalTranscript = MeetingCore.rebuildContextFromSegments(segments);
+    meetingContext = finalTranscript.length > MEETING_CONTEXT_CHAR_CAP
+      ? finalTranscript.slice(-MEETING_CONTEXT_CHAR_CAP)
+      : finalTranscript;
   }
 
   // Selecting mis-heard text in the transcript pops a small ✏️ affordance;
@@ -1313,19 +1396,39 @@
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error('OpenRouter error:', err);
-      return null;
+      const errText = await res.text();
+      console.error('OpenRouter error:', errText);
+      const err = new Error(`OpenRouter HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
     }
     return res;
   }
 
-  // Stream response into an element
+  // Shared stash so callers of streamIntoElement can inspect the HTTP status
+  // after a null/failed result. streamIntoElement swallows errors and returns
+  // null, so without this the status would be lost entirely.
+  let lastApiErrorStatus = null;
+
+  // Status-differentiated user-facing summary failure message.
+  function summaryStatusMessage(status) {
+    if (status === 401) return 'Summary failed — check your OpenRouter API key';
+    if (status === 402) return 'Summary failed — no OpenRouter credit remaining';
+    if (status === 429) return 'Summary failed — rate limited, will retry next update';
+    return 'Summary failed — text re-queued';
+  }
+
   async function streamIntoElement(el, messages, maxTokens = 512, temperature = 0.3) {
     let res;
     try {
-      res = await callOpenRouter(messages, undefined, maxTokens, temperature);
+      lastApiErrorStatus = null;   // reset per call so a stale status doesn't leak
+      // Threads the current Clear epoch's AbortSignal through so clearAll()
+      // can actually cancel an in-flight request, not just have its result
+      // ignored after the fact (Part 3).
+      res = await callOpenRouter(messages, currentClearController.signal, maxTokens, temperature);
     } catch (err) {
+      if (err.name === 'AbortError') return null; // cancelled by clearAll — not a real failure, say nothing
+      lastApiErrorStatus = (err && typeof err.status === 'number') ? err.status : null;
       console.error('streamIntoElement: request failed:', err);
       el.textContent = '(API error — check your key/connection)';
       return null;
@@ -1333,16 +1436,38 @@
     if (!res) { el.textContent = '(API error — check your key)'; return null; }
 
     const reader = res.body.getReader();
+    // {stream: true} preserves internal decoder state across calls so that a
+    // multi-byte UTF-8 sequence (e.g. any CJK character = 3 bytes) straddling
+    // two reads reassembles correctly instead of producing U+FFFD replacement chars.
     const decoder = new TextDecoder();
     let text = '';
+    let residual = '';
     el.textContent = '';
 
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value);
-        for (const line of chunk.split('\n')) {
+        if (done) {
+          // A stream can end without a trailing \n — flush residual as a complete line
+          const flushed = MeetingCore.parseSseChunks(residual, '\n');
+          for (const line of flushed.completeLines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6).trim();
+            if (data === '[DONE]') break;
+            try {
+              const json = JSON.parse(data);
+              const delta = json.choices?.[0]?.delta?.content || '';
+              text += delta;
+              el.textContent = text;
+              scrollToBottomIfNearBottom(el.closest('.panel-body'));
+            } catch {}
+          }
+          break;
+        }
+        const chunk = decoder.decode(value, {stream: true});
+        const result = MeetingCore.parseSseChunks(residual, chunk);
+        residual = result.residual;
+        for (const line of result.completeLines) {
           if (!line.startsWith('data: ')) continue;
           const data = line.slice(6).trim();
           if (data === '[DONE]') break;
@@ -1356,8 +1481,7 @@
         }
       }
     } catch (err) {
-      // Mid-stream network drop — surface what we got so far (if anything)
-      // rather than letting the rejection propagate unhandled.
+      if (err.name === 'AbortError') return null; // cancelled by clearAll mid-stream — not a real failure
       console.error('streamIntoElement: stream interrupted:', err);
       if (!text) { el.textContent = '(connection lost mid-response)'; return null; }
     }
@@ -1496,8 +1620,6 @@
   // questions, answers) must be understandable to THEM specifically — not to
   // a project manager, however a role lens is styled to think. Shared so the
   // wording only needs tuning in one place.
-  const ENGLISH_ONLY =
-    'Reply in English, even if the meeting itself is in another language or code-switches. ';
   const PLAIN_LANGUAGE_FOR_USER =
     'Write for a reader with an accounting and IT background who has no project-management '
     + 'training — avoid PM/business jargon (e.g. "stakeholder", "scope", "blocker", "workstream", '
@@ -1514,6 +1636,11 @@
   }
 
   async function runGenerateSummary(newText) {
+    // Captured before any await — if clearAll() runs while this call is in
+    // flight, the epoch check right before we touch meetingContext/DOM below
+    // catches it and discards this result instead of resurrecting stale
+    // content into the freshly-cleared meeting (Part 3).
+    const myEpoch = clearEpoch;
     summaryQueueBusy = true; // E4 diagnostics
     const panel = document.getElementById('summaryPanel');
 
@@ -1545,7 +1672,7 @@
             // meeting is still live, same reasoning as the suggested
             // questions. The transcript panel still shows the meeting
             // verbatim in whatever language it was spoken.
-            + ENGLISH_ONLY + PLAIN_LANGUAGE_FOR_USER
+            + MeetingCore.outputLanguageInstruction(document.getElementById('outputLanguageSelect').value) + PLAIN_LANGUAGE_FOR_USER
             + TRANSCRIPT_IS_DATA
         },
         {
@@ -1557,6 +1684,13 @@
       ];
 
       const summary = await streamIntoElement(textEl, messages);
+
+      // The meeting was cleared while this call was streaming — meetingContext,
+      // summaryCount and the panel it belongs to no longer exist. Discard
+      // silently rather than requeuing stale text into the new meeting or
+      // resurrecting a summary block into it.
+      if (myEpoch !== clearEpoch) return;
+
       if (summary && summary.trim()) {
         meetingContext += '\n' + summary;
         // Uncapped, this is resent in FULL on every subsequent summary/Q&A
@@ -1571,6 +1705,8 @@
         }
         textEl.__md = summary; // keep the markdown for the export (see summaryMarkdown)
         textEl.innerHTML = formatSummaryHtml(summary);
+        const summaryLang = MeetingCore.dominantLanguage(summary);
+        block.lang = summaryLang === 'mixed' ? 'zh' : summaryLang;
         // The final markdown render is taller than the streamed plain text
         // (list markup, line spacing) — re-pin AFTER it, or the last bullets
         // sit below the fold.
@@ -1593,6 +1729,7 @@
         document.getElementById('summaryCount').textContent = summaryCount;
         pendingText = newText + ' ' + pendingText;
         console.warn('Summary update came back empty — removed the blank block and re-queued the text for the next update');
+        flashStatusError(summaryStatusMessage(lastApiErrorStatus));
       }
     } catch (err) {
       // Thrown failure (network error etc.) — never lose the batch: put it
@@ -1603,7 +1740,8 @@
       summaryCount--;
       document.getElementById('summaryCount').textContent = summaryCount;
       pendingText = newText + ' ' + pendingText;
-      flashStatusError('Summary failed — text re-queued');
+      const status = (err && typeof err.status === 'number') ? err.status : lastApiErrorStatus;
+      flashStatusError(summaryStatusMessage(status));
     } finally {
       summaryQueueBusy = false; // E4 diagnostics
       clearProcessing();
@@ -1616,7 +1754,8 @@
   // the selected template) — it lands in the summary panel and exports to
   // Obsidian like any other block.
   async function generateFinalSynthesis() {
-    const source = (meetingContext || finalTranscript).trim();
+    // D37: consolidated source is uncapped — meetingContext's cap is only for the rolling prompt
+    const source = currentFullMeetingSource();
     if (!source || !document.getElementById('apiKey').value.trim()) return;
 
     const panel = document.getElementById('summaryPanel');
@@ -1660,16 +1799,18 @@
             + 'Use short plain language. Wrap key terms in **double asterisks**. '
             + template + ' '
             + roleSummaryInstruction()
-            + ENGLISH_ONLY + PLAIN_LANGUAGE_FOR_USER
+            + MeetingCore.outputLanguageInstruction(document.getElementById('outputLanguageSelect').value) + PLAIN_LANGUAGE_FOR_USER
             + actionsInstruction + TRANSCRIPT_IS_DATA
         },
-        { role: 'user', content: `Running meeting summary:\n${source.slice(-12000)}` }
+        { role: 'user', content: `Running meeting summary:\n${source}` }
       ];
 
       const synthesis = await streamIntoElement(textEl, messages, 1200);
       if (synthesis) {
         textEl.__md = synthesis; // keep the markdown for the export (see summaryMarkdown)
         textEl.innerHTML = formatSummaryHtml(synthesis);
+        const finalLang = MeetingCore.dominantLanguage(synthesis);
+        block.lang = finalLang === 'mixed' ? 'zh' : finalLang;
         scrollToBottomIfNearBottom(panel);
         summaryCount++;
         document.getElementById('summaryCount').textContent = summaryCount;
@@ -1824,7 +1965,7 @@
             ? `Reply with each distinct action item on its own line, formatted exactly as "- [tag] action text" (lightly cleaned up — who + what + deadline if mentioned), where [tag] is "mine" if the action is assigned specifically to ${userName || 'the listener'}, otherwise whichever ONE of these roles it is most relevant to: ${activeKeys.join(', ')} — or "other" if it fits none of those and isn't assigned to ${userName || 'the listener'}. `
             : 'Reply with each distinct action item on its own line, prefixed with "- ", lightly cleaned up (who + what + deadline if mentioned). ')
           + 'If there are none, reply with exactly NONE and nothing else. '
-          + ENGLISH_ONLY + PLAIN_LANGUAGE_FOR_USER
+          + MeetingCore.outputLanguageInstruction(document.getElementById('outputLanguageSelect').value) + PLAIN_LANGUAGE_FOR_USER
       },
       { role: 'user', content: text }
     ];
@@ -1955,6 +2096,16 @@
       .map(summaryMarkdown).filter(Boolean).join('\n');
   }
 
+  // Best available full-meeting source for whole-meeting reads (final
+  // synthesis, Q&A, role-question suggestions). The capped meetingContext is
+  // correct for the cheap rolling summary prompt, but these call sites ask
+  // "what has this whole meeting been about" and need the uncapped
+  // consolidated source. Falls back to the raw transcript when no summaries
+  // exist yet (D37).
+  function currentFullMeetingSource() {
+    return MeetingCore.pickFullMeetingSource(consolidatedSource(), finalTranscript);
+  }
+
   // Serialised through a queue for the same reason summaries are: two
   // overlapping rewrites would interleave their streamed output into one element.
   function regenerateConsolidatedSummary() {
@@ -1998,7 +2149,7 @@
           + roleSummaryInstruction()
           // Same panel as the rolling summary above — keep them in the same
           // language, always English, regardless of the meeting's language.
-          + ENGLISH_ONLY + PLAIN_LANGUAGE_FOR_USER
+          + MeetingCore.outputLanguageInstruction(document.getElementById('outputLanguageSelect').value) + PLAIN_LANGUAGE_FOR_USER
           + TRANSCRIPT_IS_DATA
       },
       {
@@ -2012,6 +2163,8 @@
       textEl.style.opacity = '';
       textEl.__md = out;
       textEl.innerHTML = formatSummaryHtml(out);
+      const consolidatedLang = MeetingCore.dominantLanguage(out);
+      block.lang = consolidatedLang === 'mixed' ? 'zh' : consolidatedLang;
     } else {
       textEl.innerHTML = previous;
     }
@@ -2024,7 +2177,7 @@
   // because it needs enough accumulated context to say anything useful, and
   // this is the only thing driving the panel now — no separate per-utterance
   // detection pass to compete with for freshness.
-  const SUGGEST_EVERY_N_SUMMARIES = 1;
+  const SUGGEST_EVERY_N_SUMMARIES = 3;
   const SUGGEST_MIN_CONTEXT_WORDS = 60;
   let suggestedQuestionKeys = new Set();
 
@@ -2033,7 +2186,8 @@
     if (!questionFocus) return;                                    // no role ticked
     const activeKeys = activeRoleLenses().map(r => r.key);
     if (!document.getElementById('apiKey').value.trim()) return;
-    const context = (meetingContext || '').trim();
+    // D37: consolidated source is uncapped — meetingContext's cap is only for the rolling prompt
+    const context = currentFullMeetingSource();
     if (countWords(context) < SUGGEST_MIN_CONTEXT_WORDS) return;   // too early to be useful
 
     // Feed back everything already on screen — asked or previously suggested —
@@ -2050,12 +2204,12 @@
           // Always English — a suggested question is the app's own prompt to
           // the user (not a readback of what was said), and it's meant to be
           // read at a glance while still listening to the meeting live.
-          + ENGLISH_ONLY + PLAIN_LANGUAGE_FOR_USER
+          + MeetingCore.outputLanguageInstruction(document.getElementById('outputLanguageSelect').value) + PLAIN_LANGUAGE_FOR_USER
           + TRANSCRIPT_IS_DATA
       },
       {
         role: 'user',
-        content: `Meeting so far:\n${context.slice(-6000)}\n\n`
+        content: `Meeting so far:\n${context}\n\n`
           + (alreadyRaised.length ? `Already raised (do not repeat):\n${alreadyRaised.map(q => '- ' + q).join('\n')}\n\n` : '')
           + 'What should I be asking?'
       }
@@ -2177,7 +2331,7 @@
           // Always English, regardless of what language the original question
           // (or the meeting it came from) was in — same reasoning as the
           // suggestion prompt: this is read at a glance, not spoken back.
-          + 'glance. ' + ENGLISH_ONLY + PLAIN_LANGUAGE_FOR_USER
+          + 'glance. ' + MeetingCore.outputLanguageInstruction(document.getElementById('outputLanguageSelect').value) + PLAIN_LANGUAGE_FOR_USER
           + 'Reply with only the reworded question, nothing else.'
       },
       { role: 'user', content: current }
@@ -2214,6 +2368,10 @@
 
   // ── Question Answering (manual "ask anything" box) ──────────────────────
   async function answerQuestion(question) {
+    // Captured before any await — see runGenerateSummary's epoch guard for
+    // why (Part 3): a clearAll() mid-stream must not let a stale answer land
+    // in a Q&A card that belongs to a meeting that no longer exists.
+    const myEpoch = clearEpoch;
     const panel = document.getElementById('qaPanel');
     panel.querySelector('.empty-state')?.remove();
 
@@ -2222,6 +2380,11 @@
 
     const card = document.createElement('div');
     card.className = 'qa-card';
+    // Marks this card as manually typed into the ask-the-AI box, never
+    // spoken aloud in the meeting — buildObsidianChunkMarkdown()'s
+    // export-rendering whitelist keys off this to avoid the same
+    // fabrication-class bug D32 fixed for role-lens suggestions.
+    card.dataset.origin = 'asked-of-ai';
     card.innerHTML = `
       <div class="qa-question">${escapeHtml(question)}</div>
       <div class="qa-answer loading">Thinking</div>`;
@@ -2236,23 +2399,33 @@
       const vaultContext = vaultMatches.length
         ? `Relevant notes from your Obsidian vault:\n${vaultMatches.map(m => `### ${m.path}\n${m.excerpt}`).join('\n\n')}\n\n`
         : '';
+      // D37: consolidated source is uncapped — meetingContext's cap is only for the rolling prompt
+      const meetingSource = currentFullMeetingSource();
 
       const messages = [
         {
           role: 'system',
-          content: 'You are a knowledgeable meeting assistant. A question was just asked during a meeting. Answer as 1-3 short bullet points using short, simple, plain language — no jargon, no long sentences. Each bullet starts with "- ". Wrap genuinely key terms in **double asterisks** to highlight them — only the important ones. Use the live meeting context and any relevant vault notes below — prefer the vault notes for factual or historical details they cover. ' + ENGLISH_ONLY + PLAIN_LANGUAGE_FOR_USER + TRANSCRIPT_IS_DATA
+          content: 'You are a knowledgeable meeting assistant. A question was just asked during a meeting. Answer as 1-3 short bullet points using short, simple, plain language — no jargon, no long sentences. Each bullet starts with "- ". Wrap genuinely key terms in **double asterisks** to highlight them — only the important ones. Use the live meeting context and any relevant vault notes below — prefer the vault notes for factual or historical details they cover. ' + MeetingCore.outputLanguageInstruction(document.getElementById('outputLanguageSelect').value) + PLAIN_LANGUAGE_FOR_USER + TRANSCRIPT_IS_DATA
         },
         {
           role: 'user',
-          content: `${meetingContext ? `Meeting context so far:\n${meetingContext}\n\n` : ''}${vaultContext}Question asked: ${question}`
+          content: `${meetingSource ? `Meeting context so far:\n${meetingSource}\n\n` : ''}${vaultContext}Question asked: ${question}`
         }
       ];
 
       answerEl.classList.remove('loading');
       answerEl.textContent = '';
       const answer = await streamIntoElement(answerEl, messages);
+
+      // Cleared mid-stream — the card this answer belongs to may already be
+      // gone (qaPanel's innerHTML was wiped by clearAll), and qaCount belongs
+      // to a new, empty meeting now. Discard silently.
+      if (myEpoch !== clearEpoch) return;
+
       if (answer) {
         answerEl.innerHTML = formatSummaryHtml(answer);
+        const answerLang = MeetingCore.dominantLanguage(answer);
+        answerEl.lang = answerLang === 'mixed' ? 'zh' : answerLang;
         scrollToBottomIfNearBottom(panel); // re-pin after the taller final render
       } else {
         // streamIntoElement already wrote an inline error message into the
@@ -2951,6 +3124,10 @@
     el.className = `transcript-segment ${isInterim ? 'interim' : 'final'}`;
     const badge = speakerLabel ? `<span class="seg-speaker seg-speaker-${speakerLabel}">Speaker ${speakerLabel}</span>` : '';
     el.innerHTML = `<div class="transcript-time">${timestamp()}</div>${badge}<div class="seg-text">${escapeHtml(text)}</div>`;
+    const segLang = MeetingCore.dominantLanguage(text);
+    // Mixed content has no single correct BCP-47 tag; prefer zh so code-switched
+    // CJK-heavy lines are not treated as pure English by language-sensitive heuristics.
+    el.lang = segLang === 'mixed' ? 'zh' : segLang;
     if (speakerLabel) el.dataset.speaker = speakerLabel;
     if (!isInterim) {
       const del = document.createElement('button');
@@ -3016,6 +3193,15 @@
     el.remove();
     segmentCount = document.querySelectorAll('#transcriptPanel .transcript-segment.final').length;
     document.getElementById('segCount').textContent = segmentCount;
+    // DOM is source of truth (D33/V3 precedent) — without this, a deleted
+    // segment's text stays in finalTranscript/meetingContext even though it
+    // is gone from the screen, so every LLM prompt built from those
+    // accumulators still reads content the user explicitly removed.
+    const segments = [...document.querySelectorAll('#transcriptPanel .transcript-segment.final .seg-text')].map(el => el.textContent);
+    finalTranscript = MeetingCore.rebuildContextFromSegments(segments);
+    meetingContext = finalTranscript.length > MEETING_CONTEXT_CHAR_CAP
+      ? finalTranscript.slice(-MEETING_CONTEXT_CHAR_CAP)
+      : finalTranscript;
   }
 
   // ── Live summary editing (✎ edit / ✕ delete on each update) ──────────────
@@ -3162,31 +3348,88 @@
       document.getElementById('statusDot').classList.add('active');
       document.getElementById('statusText').textContent = 'Recording';
     } else {
-      setAsrState('stopping');
-      await stopRecognition();
-      setAsrState('idle');
-      clearTimeout(summaryTimer);
-      document.getElementById('recordBtn').textContent = 'Start Meeting';
-      document.getElementById('recordBtn').classList.remove('recording');
-      document.getElementById('statusDot').classList.remove('active');
-      document.getElementById('statusText').textContent = 'Stopped';
+      // Disable the button immediately so a second click can't re-enter the
+      // stop pipeline while the async summary/export work is still running.
+      // It's only re-labelled back to "Start Meeting" once that work is done
+      // (success or failure — see the finally block below).
+      document.getElementById('recordBtn').disabled = true;
 
-      // Final summary of remaining text
-      if (countWords(pendingText) >= 5) {
-        await generateSummary(pendingText);
-        pendingText = '';
+      try {
+        // Re-request vault permission while the click's transient user activation
+        // is still alive — before any await can consume it. Store the result so we
+        // know whether the direct-vault export path is viable later.
+        let vaultPermissionGranted = false;
+        try {
+          vaultPermissionGranted = await ensureVaultReady(true);
+        } catch (_) {
+          // Permission request failed; export will fall back or be skipped.
+        }
+        if (!vaultPermissionGranted) {
+          console.warn('toggleRecording: vault permission was not granted before Stop-path export — direct-vault write may fail.');
+        }
+
+        setAsrState('stopping');
+        await stopRecognition();
+        setAsrState('idle');
+        clearTimeout(summaryTimer);
+        document.getElementById('recordBtn').classList.remove('recording');
+        document.getElementById('statusDot').classList.remove('active');
+
+        // Wrap summary flush + export logic in one try/catch so a failure in
+        // any of these three steps surfaces to the user as a persistent
+        // banner instead of silently losing the entire meeting's data.
+        try {
+          // Final summary of remaining text
+          if (countWords(pendingText) >= 5) {
+            document.getElementById('statusText').textContent = 'Writing final summary…';
+            await generateSummary(pendingText);
+            pendingText = '';
+          }
+
+          document.getElementById('statusText').textContent = 'Writing final summary…';
+          // The polished, structured final note (template-shaped).
+          await generateFinalSynthesis();
+
+          document.getElementById('statusText').textContent = 'Saving to vault…';
+          // Ship whatever's left to Obsidian automatically — no manual click
+          // needed; this is a silent no-op if no vault name is configured.
+          const exportResult = await sendAllObsidianChunks();
+
+          if (exportResult.status === 'exported') {
+            showMeetingCompleteBanner(obsidianNotePath, segmentCount);
+          } else if (exportResult.status === 'blocked') {
+            showExportFailureBanner(exportResult.reason || 'Export was blocked or declined.');
+          }
+          // 'nothing-pending' — nothing to report, no banner needed.
+        } catch (exportErr) {
+          console.error('Export failed after Stop:', exportErr);
+          showExportFailureBanner(exportErr.message || String(exportErr));
+        }
+      } finally {
+        document.getElementById('statusText').textContent = 'Stopped';
+        document.getElementById('recordBtn').textContent = 'Start Meeting';
+        document.getElementById('recordBtn').disabled = false;
       }
-
-      // The polished, structured final note (template-shaped).
-      await generateFinalSynthesis();
-
-      // Ship whatever's left to Obsidian automatically — no manual click
-      // needed; this is a silent no-op if no vault name is configured.
-      await sendAllObsidianChunks();
     }
   }
 
   async function clearAll() {
+    // Clicking Clear used to wipe the whole meeting and its autosave snapshot
+    // with zero chance to back out. Name what would be lost and let the user
+    // cancel — but don't annoy them with a dialog when there's genuinely
+    // nothing unexported to lose.
+    const { transcriptEls, summaryEls } = unexportedObsidianElements();
+    const warnMsg = MeetingCore.shouldConfirmClear(transcriptEls.length, summaryEls.length);
+    if (warnMsg !== null && !confirm(warnMsg)) return;
+
+    // Bump the epoch and cancel/replace the abort controller BEFORE any
+    // state mutation below, so in-flight summary/Q&A calls (Part 3) see the
+    // mismatch as soon as possible and an in-flight fetch is actually
+    // cancelled rather than left to finish pointlessly.
+    clearEpoch++;
+    currentClearController.abort();
+    currentClearController = new AbortController();
+
     if (isRecording) await toggleRecording(); // wait out the full stop sequence before wiping state below
     document.getElementById('transcriptPanel').innerHTML = '<div class="empty-state"><div class="icon">&#127908;</div>Enter your OpenRouter and BytePlus API keys, start the relay (<code>node relay.js</code>), then click <strong>Start Meeting</strong> to begin live transcription.</div>';
     document.getElementById('summaryPanel').innerHTML = '<div class="empty-state"><div class="icon">&#128221;</div>Summary updates automatically as the meeting progresses.</div>';
@@ -3338,13 +3581,29 @@
   // NB: id is vaultDirStatus, not vaultStatus — the Q&A panel header already
   // owns a #vaultStatus span for vault-file loading, and a duplicate id would
   // make getElementById hand both features the same element.
-  function updateVaultStatusUI() {
+  async function updateVaultStatusUI() {
     const el = document.getElementById('vaultDirStatus');
     if (!el) return;
     if (vaultDirHandle) {
-      el.textContent = `Vault: ${vaultDirHandle.name}`;
-      el.style.color = '#3fb950';
-      el.title = 'Notes are written directly into this folder.';
+      // Check actual permission state — a handle restored from IndexedDB may
+      // have had its per-tab permission lapse to 'prompt' by Chrome.
+      let permState = 'prompt';
+      try {
+        permState = await vaultDirHandle.queryPermission({ mode: 'readwrite' });
+      } catch (_) {
+        // queryPermission not supported or errored; treat as unknown/prompt.
+      }
+      if (permState === 'granted') {
+        el.textContent = `Vault: ${vaultDirHandle.name}`;
+        el.style.color = '#3fb950'; // GREEN — permission confirmed granted
+        el.title = 'Notes are written directly into this folder.';
+      } else {
+        // Permission lapsed or denied — amber warns the user to re-authorize
+        // via a fresh gesture (clicking the vault connect/disk button).
+        el.textContent = `Vault: ${vaultDirHandle.name} (permission needed)`;
+        el.style.color = '#d29922'; // AMBER — handle exists but permission not granted
+        el.title = 'Vault folder is selected but read/write permission needs to be re-granted. Click the vault button to re-authorize.';
+      }
     } else if (!window.showDirectoryPicker) {
       el.textContent = 'Vault: URI mode';
       el.style.color = '';
@@ -3383,6 +3642,49 @@
     hideVaultHint();
   }
 
+  // Persistent export-failure banner — distinct from flashStatusError, which
+  // auto-dismisses after 4 seconds and would hide a total-data-loss warning
+  // from a user who stepped away right after clicking Stop.
+  function showExportFailureBanner(msg) {
+    const el = document.getElementById('exportFailureBanner');
+    const textEl = document.getElementById('exportFailureBannerText');
+    if (!el || !textEl) return;
+    textEl.textContent = `Export failed after Stop: ${msg}`;
+    el.style.display = 'block';
+  }
+
+  function dismissExportFailureBanner() {
+    const el = document.getElementById('exportFailureBanner');
+    if (el) el.style.display = 'none';
+  }
+
+  // Persistent meeting-complete banner — same display-toggle pattern as
+  // showExportFailureBanner/dismissExportFailureBanner above, so it stays
+  // visible until the user dismisses it rather than auto-hiding.
+  function showMeetingCompleteBanner(notePath, segments) {
+    const el = document.getElementById('meetingCompleteBanner');
+    const textEl = document.getElementById('meetingCompleteBannerText');
+    if (!el || !textEl) return;
+    const pathPart = notePath ? ` Saved to ${notePath}.` : '';
+    textEl.textContent = `Meeting complete — ${segments} segment${segments === 1 ? '' : 's'} exported.${pathPart}`;
+    el.style.display = 'block';
+  }
+
+  function dismissMeetingCompleteBanner() {
+    const el = document.getElementById('meetingCompleteBanner');
+    if (el) el.style.display = 'none';
+  }
+
+  async function retryExport() {
+    try {
+      await sendAllObsidianChunks(true);
+      dismissExportFailureBanner();
+    } catch (err) {
+      // Keep the banner visible with the new error message
+      showExportFailureBanner(err.message || String(err));
+    }
+  }
+
   // Called from the banner button — a fresh user gesture, which is exactly what
   // showDirectoryPicker() needs. Do NOT move this call behind an await or into
   // the export path.
@@ -3403,7 +3705,7 @@
       }
       vaultDirHandle = handle;
       await storeVaultHandle(handle);
-      updateVaultStatusUI();
+      await updateVaultStatusUI();
       indexVaultDirectory(); // fire-and-forget — this same click already granted read permission
       alert(`Connected to "${handle.name}".\n\nNotes are now written straight into this folder, and Q&A now reads from it too. Pick your VAULT ROOT here — the notes-folder box supplies the path inside it.`);
       return true;
@@ -3432,7 +3734,16 @@
 
     let existing = '';
     if (append) {
-      try { existing = await (await fileHandle.getFile()).text(); } catch { /* new file */ }
+      try {
+        existing = await (await fileHandle.getFile()).text();
+      } catch (err) {
+        // Only treat NotFoundError as "new file, start empty". Any other error
+        // (transient cloud-sync lock, permission glitch, corrupted handle) must
+        // propagate so the caller sees a real failure instead of silently
+        // overwriting the existing note with just the new chunk.
+        if (err.name !== 'NotFoundError') throw err;
+        // else: genuinely a new file, existing stays ''
+      }
     }
     const writable = await fileHandle.createWritable();
     await writable.write(existing + md);
@@ -3449,9 +3760,13 @@
     return queueVaultWrite(runExportViaVaultHandle);
   }
 
+  // Returns the tri-state { status, reason? } shape (Part 4b) rather than a
+  // bare boolean — a write FAILURE still throws (see writeVaultNote), it is
+  // the caller (exportGuarded's catch) that turns that into 'blocked'; this
+  // function itself only ever resolves 'exported' or 'nothing-pending'.
   async function runExportViaVaultHandle() {
     const chunk = await buildObsidianChunkMarkdown();
-    if (!chunk) return false;
+    if (!chunk) return MeetingCore.determineExportStatus({ wroteContent: false, blocked: false });
 
     await writeVaultNote(chunk.notePath, chunk.md, chunk.append);
 
@@ -3466,7 +3781,7 @@
     obsidianChunkNumber++;
     chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; invalidateSnap(el); });
     updateExportLogUI();
-    return true;
+    return MeetingCore.determineExportStatus({ wroteContent: true, blocked: false });
   }
 
   // ── Export ledger (D3) ─────────────────────────────────────────────────
@@ -3488,21 +3803,26 @@
     // the note each time. The FINAL SUMMARY carries the deduplicated view.
     const summaryEls = [...document.querySelectorAll('#summaryPanel .summary-block:not(.consolidated)')].filter(el => !el.dataset.obsidianExported);
     const qaEls = [...document.querySelectorAll('#qaPanel .qa-card')].filter(el => !el.dataset.obsidianExported);
-    return { transcriptEls, summaryEls, qaEls };
+    // Action items curated in-panel (D17) — exported as their own
+    // deterministic section (Part 4a) so they reach the vault even if
+    // generateFinalSynthesis()'s LLM re-derivation never runs or fails.
+    const actionEls = [...document.querySelectorAll('#actionPanel .action-card')].filter(el => !el.dataset.obsidianExported);
+    return { transcriptEls, summaryEls, qaEls, actionEls };
   }
 
   // Builds the next chunk WITHOUT mutating export state — the caller commits
   // (note path, chunk number, exported flags) only after a successful send,
   // so a failed/oversized attempt can be retried with fewer items.
   async function buildObsidianChunkMarkdown(maxItems = Infinity) {
-    let { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
-    if (!transcriptEls.length && !summaryEls.length && !qaEls.length) return null;
+    let { transcriptEls, summaryEls, qaEls, actionEls } = unexportedObsidianElements();
+    if (!transcriptEls.length && !summaryEls.length && !qaEls.length && !actionEls.length) return null;
 
     if (maxItems !== Infinity) {
-      const keep = new Set([...transcriptEls, ...summaryEls, ...qaEls].slice(0, maxItems));
+      const keep = new Set([...transcriptEls, ...summaryEls, ...qaEls, ...actionEls].slice(0, maxItems));
       transcriptEls = transcriptEls.filter(el => keep.has(el));
       summaryEls = summaryEls.filter(el => keep.has(el));
       qaEls = qaEls.filter(el => keep.has(el));
+      actionEls = actionEls.filter(el => keep.has(el));
     }
 
     const isFirstChunk = !obsidianNotePath;
@@ -3538,23 +3858,40 @@
     // fabricated meeting content, which this app must never produce. They are
     // still worth keeping (they are the questions worth following up on), so
     // they export under an unambiguous label instead.
+    // Whitelist, not a blacklist: only recognized origin markers get to
+    // render as anything. Automatic spoken-question detection was removed
+    // (D35/A2), so every card here was either a role-lens suggestion or
+    // manually typed into the ask-the-AI box — never actually asked aloud.
+    // Falling through to the bare "**Q:**/**A:**" format for anything
+    // unmarked would silently fabricate a spoken question, the same class
+    // of bug D32 fixed for suggestions.
     const qaBlocks = qaEls.map(el => {
       const q = el.querySelector('.qa-question').textContent;
       if (el.dataset.suggested) {
         const role = el.dataset.roleShort ? ` — ${el.dataset.roleShort} lens` : '';
         return `**Suggested question (not asked in the meeting)${role}:** ${q}`;
       }
-      return `**Q:** ${q}\n**A:** ${el.querySelector('.qa-answer').textContent}`;
+      if (el.dataset.origin === 'asked-of-ai') {
+        return `**Asked of the assistant (not asked in the meeting):** ${q}\n**A:** ${el.querySelector('.qa-answer').textContent}`;
+      }
+      // Defensive fallback for any future unrecognized card shape — must
+      // never default to looking like something said aloud in the meeting.
+      return `**Asked of the assistant (not asked in the meeting):** ${q}\n**A:** ${el.querySelector('.qa-answer')?.textContent || ''}`;
     });
+    // Deterministic, independent of generateFinalSynthesis()'s LLM call
+    // (Part 4a) — the same curated, dismissal-aware list always reaches the
+    // vault, even when that LLM call fails or the meeting is exported before
+    // Stop is ever pressed.
+    const actionLines = actionEls.map(el => `- ${el.querySelector('.action-text')?.textContent?.trim() ?? el.textContent.trim()}`);
 
     const chunkBody = `## Segment ${obsidianChunkNumber} — ${timeStr}
-${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}${transcriptLines.length ? `\n**Transcript**\n${transcriptLines.join('\n\n')}\n` : ''}${qaBlocks.length ? `\n**Q&A**\n${qaBlocks.join('\n\n')}\n` : ''}`;
+${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}${transcriptLines.length ? `\n**Transcript**\n${transcriptLines.join('\n\n')}\n` : ''}${qaBlocks.length ? `\n**Q&A**\n${qaBlocks.join('\n\n')}\n` : ''}${actionLines.length ? `\n**Action Items**\n${actionLines.join('\n')}\n` : ''}`;
 
     const md = isFirstChunk
       ? `---\ntitle: ${obsidianMeetingTitle}\ndate: ${dateStr}\ntags: [meeting, meetingmind]\n---\n\n# ${obsidianMeetingTitle}\n${dateStr} ${timeStr}\n\n${chunkBody}`
       : `\n\n${chunkBody}`; // appended chunks skip frontmatter/title — those only belong at the top of the file
 
-    return { notePath, md, timeStr, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls] };
+    return { notePath, md, timeStr, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls, ...actionEls] };
   }
 
   function downloadMarkdownFile(notePath, md) {
@@ -3682,10 +4019,23 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   async function sendAllObsidianChunks(interactive = true) {
     if (await ensureVaultReady(interactive)) return exportViaVaultHandle();
 
-    if (!await sendObsidianChunk()) return false;
+    if (!await sendObsidianChunk()) {
+      // sendObsidianChunk() returns false both when there is genuinely
+      // nothing left to export AND when it was blocked (no vault name
+      // configured for the URI fallback). Re-check what's actually still
+      // pending so addToObsidian() can tell those two apart (Part 4b) —
+      // a blocked export must never be read as "already fully exported".
+      const { transcriptEls, summaryEls, qaEls, actionEls } = unexportedObsidianElements();
+      const hasPending = transcriptEls.length + summaryEls.length + qaEls.length + actionEls.length > 0;
+      return MeetingCore.determineExportStatus({
+        wroteContent: false,
+        blocked: hasPending,
+        blockedReason: 'Vault permission was denied and no Obsidian vault name is configured for the URI fallback'
+      });
+    }
 
-    const { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
-    const remaining = transcriptEls.length + summaryEls.length + qaEls.length;
+    const { transcriptEls, summaryEls, qaEls, actionEls } = unexportedObsidianElements();
+    const remaining = transcriptEls.length + summaryEls.length + qaEls.length + actionEls.length;
     if (remaining) {
       // They have now hit exactly what the hint banner warns about, so bring it
       // back even if it was dismissed earlier — this is the moment the offer is
@@ -3694,7 +4044,9 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       maybeShowVaultHint();
       alert(`Sent one section to Obsidian — ${remaining} item(s) are still pending.\n\nChrome allows only one obsidian:// launch per click, so click "Add to Obsidian" again for the next one.\n\nTo send everything in ONE click instead, use the "Connect vault folder" button in the banner at the top (or the disk button in the header).`);
     }
-    return true;
+    // A URI chunk was actually launched — 'exported', even though more may
+    // still be pending (the alert above already told the user that).
+    return MeetingCore.determineExportStatus({ wroteContent: true, blocked: false });
   }
 
   // Called after every new final transcript segment. Only meaningful with a
@@ -3704,8 +4056,8 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   // and leaves the content pending for the manual button.
   async function checkObsidianAutoSplit() {
     if (!vaultDirHandle) return;
-    const { transcriptEls, summaryEls, qaEls } = unexportedObsidianElements();
-    const pending = [...transcriptEls, ...summaryEls, ...qaEls];
+    const { transcriptEls, summaryEls, qaEls, actionEls } = unexportedObsidianElements();
+    const pending = [...transcriptEls, ...summaryEls, ...qaEls, ...actionEls];
     if (!pending.length) return;
     if (pending.reduce((sum, el) => sum + el.textContent.length, 0) < OBSIDIAN_AUTOSAVE_CHARS) return;
     if (!await ensureVaultReady(false)) return;
@@ -3727,12 +4079,19 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   // untouched so the same click can simply be repeated.
   async function exportGuarded() {
     try {
-      return await sendAllObsidianChunks(true);
+      return await sendAllObsidianChunks(true); // tri-state — see sendAllObsidianChunks
     } catch (err) {
+      // The old `return true` here masked a thrown write failure as success,
+      // which let addToObsidian() treat it as "nothing pending" and offer the
+      // destructive re-write. It's a block, not a success — say so.
       console.error('Obsidian export failed:', err);
       flashStatusError('Obsidian export failed');
       alert(`Writing to the vault failed:\n\n${err.message}\n\nNothing was marked as exported — fix the problem and click again.`);
-      return true; // handled; don't fall through to the re-send prompt
+      return MeetingCore.determineExportStatus({
+        wroteContent: false,
+        blocked: true,
+        blockedReason: err.message || 'Export failed with an unexpected error'
+      });
     }
   }
 
@@ -3743,10 +4102,31 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       }
       return;
     }
-    if (await exportGuarded()) return;
+    const result = await exportGuarded();
 
-    const hasContent = document.querySelector('#transcriptPanel .transcript-segment.final, #summaryPanel .summary-block, #qaPanel .qa-card');
+    // Content was actually written this click — done.
+    if (result.status === 'exported') return;
+
+    // Blocked (permission denied, no vault configured for the fallback, a
+    // thrown write error) — this is NOT "already exported", and offering the
+    // destructive re-write here would wipe exportLedger/every exported flag
+    // for a retry that would hit the exact same block. Surface the reason
+    // instead via TASK_04's persistent banner.
+    if (result.status === 'blocked') {
+      showExportFailureBanner(result.reason || 'Export was blocked or declined.');
+      return;
+    }
+
+    // status === 'nothing-pending' — genuinely nothing left to export.
+    const hasContent = document.querySelector('#transcriptPanel .transcript-segment.final, #summaryPanel .summary-block, #qaPanel .qa-card, #actionPanel .action-card');
     if (!hasContent) { alert('Nothing to send yet — the meeting has no content.'); return; }
+
+    // Only offer the destructive re-write when there is a genuine prior
+    // successful export in the ledger — "nothing pending" with an EMPTY
+    // ledger means this content was never exported in the first place (e.g.
+    // it all just got marked exported by something else), so there is
+    // nothing to usefully "re-write".
+    if (!exportLedger.length) return;
 
     if (confirm('Everything is already marked as exported.\n\nClick OK to RE-WRITE the whole meeting into the same note, replacing what is there.')) {
       document.querySelectorAll('[data-obsidian-exported]').forEach(el => { delete el.dataset.obsidianExported; invalidateSnap(el); });
@@ -3915,6 +4295,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     // reload — a meeting could be summarised by a different model than the one
     // the user thought they picked.
     modelSelect: 'meetingmind_model',
+    outputLanguageSelect: 'meetingmind_output_language',
     apiKey: 'meetingmind_openrouter_key',
     bytePlusKey: 'meetingmind_byteplus_key',
     relayUrl: 'meetingmind_relay_url',
@@ -3927,6 +4308,13 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
   };
 
   async function restorePersistedFields() {
+    // Surface the current origin so a user who lands on an unexpected port
+    // (e.g. relay.js started with --port <n> other than the usual 8765)
+    // notices immediately — localStorage is scoped per origin, so a
+    // different port means all saved keys/corrections/settings are empty.
+    const originEl = document.getElementById('originValue');
+    if (originEl) originEl.textContent = window.location.origin;
+
     for (const [fieldId, storageKey] of Object.entries(PERSISTED_FIELDS)) {
       const el = document.getElementById(fieldId);
       const saved = localStorage.getItem(storageKey);
@@ -3990,7 +4378,7 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     } catch (err) {
       console.warn('Could not restore the saved vault folder:', err.message);
     }
-    updateVaultStatusUI();
+    await updateVaultStatusUI();
   }
 
   // Chrome's built-in password manager can reset type="password" fields

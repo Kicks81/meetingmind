@@ -10,7 +10,17 @@
 // Setup (one-time):
 //   npm install ws
 // Run (each time before using meeting.html):
-//   node relay.js [port]      (default port 8765)
+//   node relay.js [--port <port>] [--host <host>]      (default port 8765)
+//
+// Why a flag instead of a bare positional argument: meeting.html is served
+// from this same process (see STATIC_FILES below) and browsers scope
+// localStorage per origin (scheme+host+port). A user who fat-fingers an
+// extra word on the command line used to get it silently parsed as the
+// port — landing on a different, unexpected port with a fresh, empty
+// localStorage (no saved API keys/corrections/settings) and no obvious
+// explanation why. Requiring --port makes an intentional port change
+// explicit and turns a typo into "unrecognised argument" instead of a
+// silent origin switch.
 
 const { WebSocketServer, WebSocket } = require('ws');
 const crypto = require('crypto');
@@ -18,20 +28,20 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// Args: node relay.js [port] [--host <host>]. --host defaults to 127.0.0.1
-// (localhost-only); pass --host 0.0.0.0 to opt into LAN access.
+// Args: node relay.js [--port <port>] [--host <host>]. --host defaults to
+// 127.0.0.1 (localhost-only); pass --host 0.0.0.0 to opt into LAN access.
 const rawArgs = process.argv.slice(2);
 let HOST = '127.0.0.1';
-const positional = [];
+let PORT = 8765;
 for (let i = 0; i < rawArgs.length; i++) {
-  if (rawArgs[i] === '--host') {
+  if (rawArgs[i] === '--port') {
+    PORT = parseInt(rawArgs[i + 1], 10);
+    i++;
+  } else if (rawArgs[i] === '--host') {
     HOST = rawArgs[i + 1] || HOST;
     i++;
-  } else {
-    positional.push(rawArgs[i]);
   }
 }
-const PORT = positional[0] ? parseInt(positional[0], 10) : 8765;
 const UPSTREAM_BASE = 'wss://voice.ap-southeast-1.bytepluses.com/api/v3/sauc';
 const BACKPRESSURE_BYTES = 1024 * 1024; // 1MB — visibility only, no throttling.
 
