@@ -69,8 +69,12 @@ known zh defect is open. Every text-logic change still needs zh/en/mixed fixture
 ## P2 — Granola-parity features (the "better than Granola" gap)
 - [ ] **G2. User notes pane.** Let the user jot rough notes during the meeting; merge
   them with the transcript in the final synthesis (Granola's signature interaction).
-- [ ] **G3b. Templates should also shape the final synthesis** once G1 exists (the
-  live-summary template part shipped as U5).
+- [x] **G3b. Templates should also shape the final synthesis** once G1 exists (the
+  live-summary template part shipped as U5). Stale — already true: `git log -S` on
+  `generateFinalSynthesis`'s `const template = SUMMARY_TEMPLATES[...]` line traces it
+  back to G1's own original commit (`2e2854c`), and it's injected into the prompt at
+  the same site fixed for A2/A3. Templates have shaped the final synthesis since G1
+  shipped; this line was never re-verified against the code before now.
 - [ ] **G4. Speaker attribution.** Investigate BytePlus utterance speaker fields /
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
 - [x] **G5. Word-document export for users without an Obsidian vault connected.**
