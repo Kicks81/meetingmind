@@ -67,8 +67,15 @@ known zh defect is open. Every text-logic change still needs zh/en/mixed fixture
   Also fixed the re-send nulling `obsidianMeetingTitle`, which renamed the meeting and
   forked a second note instead of replacing the first. See DEVELOPMENT.md D28.
 ## P2 — Granola-parity features (the "better than Granola" gap)
-- [ ] **G2. User notes pane.** Let the user jot rough notes during the meeting; merge
-  them with the transcript in the final synthesis (Granola's signature interaction).
+- [x] **G2. User notes pane.** Added a `#userNotes` textarea (same split-pane pattern as
+  `.qa-split`, below the live transcript) for the user to jot rough notes during the
+  meeting; `generateFinalSynthesis()` now merges them into the final note wherever they
+  fit (a note like "follow up with Sarah" becomes an Action Item) rather than dumping
+  them as a separate disconnected list — the actual Granola-signature interaction, not
+  just a scratchpad. Same lifecycle as A1's attendees field: excluded from
+  `PERSISTED_FIELDS` (a fresh meeting starts blank, no carryover), included in the
+  autosave snapshot for crash recovery within the same meeting (additive `userNotes`
+  field, `snap.v` unchanged), wiped by `clearAll()`.
 - [x] **G3b. Templates should also shape the final synthesis** once G1 exists (the
   live-summary template part shipped as U5). Stale — already true: `git log -S` on
   `generateFinalSynthesis`'s `const template = SUMMARY_TEMPLATES[...]` line traces it
