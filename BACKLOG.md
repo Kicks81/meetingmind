@@ -104,12 +104,15 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   the autosave snapshot (crash recovery within one meeting); `clearAll()` must wipe it.
   Build the section **deterministically — never send names to the LLM**: it minimises
   PDPA exposure and stops a model *assigning* an owner from a roster.
-- [ ] **A2. "All four sections always present" is self-contradictory in one prompt.**
-  The final-synthesis system prompt says an empty section still gets `- [None recorded]`,
-  but `actionsInstruction` says *"omit the **Action Items** section entirely"*. A missing
-  heading leaves the reader unable to tell "no actions" from "the extractor failed".
-  Same line also concatenates the curated list straight onto `TRANSCRIPT_IS_DATA` with
-  no separating newline, so the last action reads as part of the instructions.
+- [x] **A2. "All four sections always present" is self-contradictory in one prompt.**
+  The final-synthesis system prompt said an empty section still gets `- [None recorded]`,
+  but `actionsInstruction` said *"omit the **Action Items** section entirely"*. Now
+  matches the same rule as every other section: always include the heading, with a
+  single `- [None recorded]` bullet when nothing was curated. Also fixed the curated-list
+  branch running straight into `TRANSCRIPT_IS_DATA` with no separating newline (the last
+  action item was reading as part of the instructions) — added a trailing `\n` after the
+  bullet list; the other `TRANSCRIPT_IS_DATA` call sites are untouched since they
+  continue an ordinary prose sentence, not a list.
 - [ ] **A3. Action items do not reliably carry an owner.** The prompt asks for
   `what — owner — due`, but the curated list is injected as free text with *"rephrase
   minimally"*. Fix in the **final-synthesis prompt only**. Do NOT restructure

@@ -1814,9 +1814,18 @@
       // action never resurfaces in the exported note.
       const curatedActions = [...document.querySelectorAll('#actionPanel .action-card .action-text')]
         .map(el => el.textContent.trim()).filter(Boolean);
+      // A2: this must never contradict the "every section, including empty
+      // ones, still gets its heading + a single '- [None recorded]' bullet"
+      // rule below — "omit the section entirely" previously did exactly that.
+      // The curated-list branch ends with a bullet list, so it needs its own
+      // trailing newline; otherwise the next instruction sentence runs onto
+      // the same line as the last action item (nothing else appended after
+      // actionsInstruction ends in a bullet list, so this is the only site
+      // that needs it — see TRANSCRIPT_IS_DATA's other call sites, which are
+      // all continuing an ordinary prose sentence, not a list).
       const actionsInstruction = curatedActions.length
-        ? ` For the **Action Items** section, use exactly this curated list of action items (rephrase minimally for clarity, do not drop any, do not add any of your own):\n${curatedActions.map(a => '- ' + a).join('\n')}`
-        : ' No action items were curated for this meeting — omit the **Action Items** section entirely.';
+        ? ` For the **Action Items** section, use exactly this curated list of action items (rephrase minimally for clarity, do not drop any, do not add any of your own):\n${curatedActions.map(a => '- ' + a).join('\n')}\n`
+        : ' No action items were curated for this meeting — still include the **Action Items** heading with a single bullet "- [None recorded]", same as any other empty section.';
       const messages = [
         {
           role: 'system',
