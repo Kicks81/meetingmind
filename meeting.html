@@ -302,6 +302,13 @@
 
   .seg-speaker-A { background: rgba(88, 166, 255, 0.16); color: #58a6ff; }
   .seg-speaker-B { background: rgba(219, 97, 162, 0.18); color: #db61a2; }
+  /* G4: diarization can return more than 2 speakers; A/B above are also used
+     by the existing 2-way speaker-split feature. C+ covers the rest, cycling
+     if a meeting genuinely has more than 6 distinct speakers. */
+  .seg-speaker-C { background: rgba(63, 185, 80, 0.18); color: #3fb950; }
+  .seg-speaker-D { background: rgba(210, 153, 34, 0.18); color: #d29922; }
+  .seg-speaker-E { background: rgba(163, 113, 247, 0.18); color: #a371f7; }
+  .seg-speaker-F { background: rgba(255, 123, 114, 0.18); color: #ff7b72; }
 
   /* Summary */
   .summary-block {
@@ -675,6 +682,9 @@
     <input class="api-input" style="width:200px;" type="text" id="hotwords" placeholder="Hotwords: Swetha, Kai, AFO, ..." title="Comma-separated names/jargon to help the ASR recognise them correctly">
     <input class="api-input" style="width:130px;" type="text" id="userName" placeholder="Your name (optional)" title="When a role lens is ticked, Action Required is filtered to that role — action items assigned specifically to this name are always kept regardless.">
     <input class="api-input" style="width:180px;" type="text" id="attendees" placeholder="Attendees (optional)" title="Free-text list of who's in this meeting — written verbatim into the note header (Part 4a: A1), never sent to the LLM. Not remembered across meetings (Clear wipes it, and it's excluded from Save Config) so a roster from a past meeting can never be carried over and reported as attendance that didn't happen.">
+    <label style="font-size:11px;display:flex;align-items:center;gap:4px;white-space:nowrap;" title="G4: retains the raw meeting audio in memory (nothing saved to disk), and after Stop sends it to OpenRouter (microsoft/mai-transcribe-2) to label each transcript segment with a speaker (Speaker A/B/C...). Costs ~$0.10/hour of audio on your OpenRouter account. Only meaningful for meetings under roughly an hour — see D39.">
+      <input type="checkbox" id="diarizeEnabled"> Speaker labels
+    </label>
     <button class="btn btn-start" id="recordBtn" onclick="toggleRecording()">Start Meeting</button>
     <button class="btn btn-clear" onclick="addToObsidian()" title="No Obsidian set up? This offers to download the meeting as a plain Markdown file instead.">Add to Obsidian</button>
     <span id="exportLog" style="font-size:11px;opacity:.75;align-self:center;" title=""></span>
@@ -2704,6 +2714,15 @@
   let reconnectBufferBytes = 0;
   let reconnectBufferOverflowed = false;
 
+  // G4: opt-in raw-audio retention for post-meeting speaker diarization.
+  // Nothing here ever touches disk — in-memory only, cleared at Stop (once
+  // sent for diarization) and by clearAll(). See D39 for the design and its
+  // sharp edges (memory footprint, the 60s-per-request timeout).
+  let diarizeThisMeeting = false;
+  let recordingStartedAt = null;
+  let rawAudioChunks = [];
+  let rawAudioByteLength = 0;
+
   function bufferReconnectChunk(pcm16Bytes) {
     reconnectBuffer.push(pcm16Bytes);
     reconnectBufferBytes += pcm16Bytes.byteLength;
@@ -2893,6 +2912,17 @@
     finalizedUtteranceCount = 0;
     interimEl = null;
 
+    // G4: raw-audio retention for post-meeting diarization, opt-in only.
+    // recordingStartedAt anchors the same clock every .transcript-segment's
+    // recSec is measured against, so diarization's returned start/end
+    // (seconds into the WAV) line up with segments regardless of any ASR
+    // reconnect gaps in between — the capture graph runs continuously
+    // through those (D10), so this does too.
+    diarizeThisMeeting = document.getElementById('diarizeEnabled').checked;
+    recordingStartedAt = diarizeThisMeeting ? Date.now() : null;
+    rawAudioChunks = [];
+    rawAudioByteLength = 0;
+
     // Set up ALL audio capture BEFORE connecting to BytePlus. The share
     // picker (for system audio) waits on the user, which can easily take
     // longer than BytePlus's 8-second "waiting for first packet" timeout —
@@ -2951,6 +2981,14 @@
     // streaming the instant BytePlus's session is ready, not later.
     const onCaptureChunk = (float32Chunk) => {
       const pcm16 = floatTo16BitPCM(float32Chunk);
+      // G4: independent of the ASR send path below — retained for the whole
+      // meeting (including any reconnect gaps, since the capture graph runs
+      // continuously through those per D10) so diarization timestamps stay
+      // anchored to one continuous clock regardless of ASR connectivity.
+      if (diarizeThisMeeting) {
+        rawAudioChunks.push(pcm16);
+        rawAudioByteLength += pcm16.length;
+      }
       if (!asrReady || !asrSocket || asrSocket.readyState !== WebSocket.OPEN) {
         bufferReconnectChunk(pcm16); // TASK_12: buffer instead of silently dropping during a reconnect gap
         return;
@@ -3288,7 +3326,14 @@
     totalWords += countWords(text);
     document.getElementById('wordCount').textContent = `${totalWords} words transcribed`;
 
-    return createTranscriptSegment(text, false);
+    const el = createTranscriptSegment(text, false);
+    // G4: anchors this segment to the same clock as the WAV sent for
+    // diarization (recordingStartedAt), so the returned speaker segments'
+    // start/end (seconds into that file) can be matched back to it.
+    if (diarizeThisMeeting && recordingStartedAt) {
+      el.dataset.recSec = ((Date.now() - recordingStartedAt) / 1000).toFixed(2);
+    }
+    return el;
   }
 
   // Builds a segment element WITHOUT inserting it — used both by
@@ -3354,10 +3399,12 @@
 
     const time = segEl.querySelector('.transcript-time').textContent;
     const wasExported = !!segEl.dataset.obsidianExported; // already in Obsidian — don't re-export it as "new"
+    const recSec = segEl.dataset.recSec; // G4: both halves share the original utterance's diarization anchor — approximate, but better than losing coverage entirely
     const newEls = turns.map(t => {
       const el = buildSegmentElement(t.text, false, t.speaker);
       el.querySelector('.transcript-time').textContent = time; // keep the ORIGINAL utterance's time, not "now"
       if (wasExported) el.dataset.obsidianExported = '1';
+      if (recSec) el.dataset.recSec = recSec;
       return el;
     });
 
@@ -3365,6 +3412,93 @@
     segmentCount += newEls.length - 1; // one segment became N — reflect that in the header count
     document.getElementById('segCount').textContent = segmentCount;
     autosave();
+  }
+
+  // ── G4: post-meeting speaker diarization (opt-in, via OpenRouter) ────────
+  // btoa(String.fromCharCode(...bytes)) blows the call-stack/argument limit
+  // for anything beyond a few tens of KB — chunk it. A 60-min mono 16kHz
+  // recording is ~115MB raw, so this matters here, unlike everywhere else in
+  // the app that only ever base64-encodes small strings.
+  function uint8ToBase64(bytes) {
+    const CHUNK = 0x8000;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  }
+
+  const DIARIZATION_MODEL = 'microsoft/mai-transcribe-2';
+
+  // Sends the whole retained recording as ONE request. Per OpenRouter's docs
+  // the upstream provider times out at 60s of PROCESSING time, not audio
+  // duration — MAI-Transcribe-2 is built for single-pass long-form audio, so
+  // most meetings should fit, but this is exactly the kind of behavior that
+  // needs confirming against a real account/meeting before being trusted (see
+  // D39) — an unexpectedly long/slow meeting surfaces as a request failure
+  // here, not a silent wrong answer.
+  async function diarizeRecording() {
+    if (!rawAudioChunks.length) return;
+    const combined = new Uint8Array(rawAudioByteLength);
+    let offset = 0;
+    for (const chunk of rawAudioChunks) { combined.set(chunk, offset); offset += chunk.length; }
+    // Free the raw chunks now — the combined buffer + its base64 string is
+    // about to roughly triple peak memory use (raw + combined + base64);
+    // don't hold three copies longer than necessary.
+    rawAudioChunks = [];
+    rawAudioByteLength = 0;
+
+    const wav = MeetingCore.buildWavFile(16000, combined);
+    const base64Audio = uint8ToBase64(wav);
+    const apiKey = document.getElementById('apiKey').value.trim();
+
+    const res = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: DIARIZATION_MODEL,
+        input_audio: { data: base64Audio, format: 'wav' },
+        response_format: 'verbose_json',
+        timestamp_granularities: ['segment'],
+        provider: { options: { azure: { diarization: { enabled: true } } } }
+      })
+    });
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '');
+      throw new Error(`Diarization request failed: HTTP ${res.status}${bodyText ? ' — ' + bodyText.slice(0, 200) : ''}`);
+    }
+    const json = await res.json();
+    applyDiarizationLabels(json.segments);
+  }
+
+  // Matches each stamped .transcript-segment (data-rec-sec, seconds since
+  // recordingStartedAt — the same clock the WAV was built against) to the
+  // diarization segment whose [start, end] window contains it, falling back
+  // to the closest one by start time for a segment that lands just outside
+  // every window (rounding at chunk/utterance boundaries).
+  function applyDiarizationLabels(segments) {
+    if (!Array.isArray(segments) || !segments.length) return;
+    const els = [...document.querySelectorAll('#transcriptPanel .transcript-segment.final[data-rec-sec]')];
+    for (const el of els) {
+      const t = parseFloat(el.dataset.recSec);
+      if (Number.isNaN(t)) continue;
+      const contained = segments.find(s => t >= s.start && t <= s.end);
+      const match = contained || segments.reduce(
+        (closest, s) => (Math.abs(s.start - t) < Math.abs(closest.start - t) ? s : closest),
+        segments[0]
+      );
+      if (!match || typeof match.speaker !== 'number') continue;
+      const label = String.fromCharCode(65 + (match.speaker % 26)); // 0->A, 1->B, ... cycles past Z on an unusually large meeting
+      el.dataset.speaker = label;
+      let badge = el.querySelector('.seg-speaker');
+      if (!badge) {
+        badge = document.createElement('span');
+        el.insertBefore(badge, el.querySelector('.seg-text'));
+      }
+      badge.className = `seg-speaker seg-speaker-${label}`;
+      badge.textContent = `Speaker ${label}`;
+      invalidateSnap(el);
+    }
   }
 
   function deleteSegment(el) {
@@ -3583,6 +3717,21 @@
           console.error('Export failed after Stop:', exportErr);
           showExportFailureBanner(exportErr.message || String(exportErr));
         }
+
+        // G4: independent of export above — a diarization failure shouldn't
+        // read as an export failure, and vice versa. flashStatusError (not a
+        // persistent banner) since nothing is lost here; the meeting/export
+        // already succeeded or failed on its own above, this only adds
+        // speaker labels on top of a transcript that's already safely saved.
+        if (diarizeThisMeeting && rawAudioChunks.length) {
+          try {
+            document.getElementById('statusText').textContent = 'Diarizing speakers…';
+            await diarizeRecording();
+          } catch (diarizeErr) {
+            console.error('Speaker diarization failed:', diarizeErr);
+            flashStatusError('Speaker diarization failed: ' + (diarizeErr.message || String(diarizeErr)));
+          }
+        }
       } finally {
         document.getElementById('statusText').textContent = 'Stopped';
         document.getElementById('recordBtn').textContent = 'Start Meeting';
@@ -3637,6 +3786,12 @@
     document.getElementById('statusText').textContent = 'Ready';
     document.getElementById('attendees').value = ''; // A1: never carries over into the next meeting
     document.getElementById('userNotes').value = ''; // G2: same — a fresh meeting starts with a blank notes pane
+    // G4: free the retained raw audio immediately rather than waiting for it
+    // to be garbage-collected — it can be tens/hundreds of MB.
+    diarizeThisMeeting = false;
+    recordingStartedAt = null;
+    rawAudioChunks = [];
+    rawAudioByteLength = 0;
   }
 
   // ── Export to Obsidian ───────────────────────────────────────────────────
@@ -4645,6 +4800,13 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
       });
     });
     updateRoleLensHint();
+
+    // G4: same reason as role lenses — PERSISTED_FIELDS mirrors el.value,
+    // not el.checked.
+    const DIARIZE_KEY = 'meetingmind_diarize_enabled';
+    const diarizeBox = document.getElementById('diarizeEnabled');
+    diarizeBox.checked = localStorage.getItem(DIARIZE_KEY) === '1';
+    diarizeBox.addEventListener('change', () => localStorage.setItem(DIARIZE_KEY, diarizeBox.checked ? '1' : '0'));
 
     // Re-adopt the vault folder picked in an earlier session. The handle
     // survives in IndexedDB; only the permission may have lapsed back to

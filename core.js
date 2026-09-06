@@ -743,6 +743,43 @@
     return out;
   }
 
+  // ── WAV encoding (G4, post-meeting speaker diarization) ──────────────────
+  // Wraps raw PCM16 mono samples (already little-endian, the shape
+  // floatTo16BitPCM already produces) in a minimal 44-byte canonical WAV
+  // header — no compression, no external library. Byte layout per the
+  // canonical RIFF/WAVE spec; verified byte-for-byte in evals rather than
+  // just "does it parse", since a diarization API rejecting a malformed file
+  // silently wastes the one post-meeting attempt.
+  function buildWavHeader(sampleRate, numChannels, bitsPerSample, dataLength) {
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const buf = new ArrayBuffer(44);
+    const view = new DataView(buf);
+    const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataLength, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);       // PCM fmt chunk size
+    view.setUint16(20, 1, true);        // audio format 1 = PCM (uncompressed)
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataLength, true);
+    return new Uint8Array(buf);
+  }
+
+  function buildWavFile(sampleRate, pcm16Bytes) {
+    const header = buildWavHeader(sampleRate, 1, 16, pcm16Bytes.length);
+    const out = new Uint8Array(header.length + pcm16Bytes.length);
+    out.set(header, 0);
+    out.set(pcm16Bytes, header.length);
+    return out;
+  }
+
   function markdownToRtf(markdown) {
     var body = (markdown || '');
     // buildObsidianChunkMarkdown's YAML frontmatter is Obsidian-specific
@@ -817,5 +854,6 @@
     pickFullMeetingSource,
     rebuildContextFromSegments,
     markdownToRtf,
+    buildWavFile,
   };
 });

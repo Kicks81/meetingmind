@@ -82,8 +82,18 @@ known zh defect is open. Every text-logic change still needs zh/en/mixed fixture
   back to G1's own original commit (`2e2854c`), and it's injected into the prompt at
   the same site fixed for A2/A3. Templates have shaped the final synthesis since G1
   shipped; this line was never re-verified against the code before now.
-- [ ] **G4. Speaker attribution.** Investigate BytePlus utterance speaker fields /
-  channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
+- [x] **G4. Speaker attribution.** BytePlus's streaming ASR (the exact endpoint this app uses) has
+  no speaker/channel field at all, and mic+system are summed into one mono stream before BytePlus
+  ever sees them, so channel separation was never possible either — see D39 for how this was
+  actually confirmed (BytePlus's own docs, not just a web search summary). Implemented instead via
+  `microsoft/mai-transcribe-2` on OpenRouter as an **opt-in, post-meeting** step (it's a 60-min
+  batch model, not a live API): retain raw PCM during the meeting, encode as WAV
+  (`MeetingCore.buildWavFile`, byte-verified in evals) at Stop, send for diarization, match
+  returned speaker-labeled segments back onto the transcript by timestamp, reusing the existing
+  `.seg-speaker` badge UI. Two things flagged as needing live confirmation (not yet possible without
+  a real OpenRouter account + real meeting): whether typical meetings fit the documented 60s
+  upstream timeout in one request, and whether Azure's diarization actually discriminates well on
+  this app's specific mixed-mono capture (vs. a clean multi-speaker recording).
 - [x] **G5. Word-document export for users without an Obsidian vault connected.**
   User request. `downloadEntireMeetingAsMarkdown()` already covered the no-vault
   fallback, but a `.md` file is a dead end for anyone who doesn't already use

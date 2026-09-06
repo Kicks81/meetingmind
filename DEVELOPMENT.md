@@ -878,6 +878,53 @@ these are considered fully confirmed working.
 References: D10 (reconnect backoff), D13/D22/D23 (capture graph survives reconnect, ASR state
 machine), D15 (summaryQueue serialization), D33 (DOM-as-source-of-truth export pattern).
 
+### D39 (2026-09-06): Speaker diarization (G4) — BytePlus has none; OpenRouter's mai-transcribe-2 does
+
+Investigated BytePlus's actual streaming ASR request/response schema (the exact `bigmodel_async` /
+`volc.seedasr.sauc.duration` endpoint this app calls, verified against BytePlus's own current docs)
+end to end: there is no speaker/channel field anywhere in it. A web search had suggested an
+`enable_speaker_info` parameter exists; it does not, for this endpoint — that claim didn't survive
+checking the primary source. Channel separation (mic vs system) was never an option either: both
+sources are summed into one mono stream before BytePlus ever sees it (Web Audio's automatic
+multi-input summing), so BytePlus has no way to distinguish them regardless.
+
+What does exist: `microsoft/mai-transcribe-2`, hosted on OpenRouter (the same API key this app
+already uses) via `POST /api/v1/audio/transcriptions`, with `provider.options.azure.diarization.
+enabled: true` returning a `speaker` index per segment. This is fundamentally a **60-minute
+single-pass batch model**, not a live streaming API — the opposite shape from BytePlus's live
+WebSocket protocol — so it only makes sense as an **opt-in, post-meeting** step, not a live
+transcription replacement.
+
+Implementation: an opt-in `#diarizeEnabled` checkbox. When ticked, `onCaptureChunk` also retains a
+copy of every raw (uncompressed) PCM16 chunk in memory — independent of the BytePlus send path,
+so it isn't affected by reconnect gaps (D10: the capture graph runs continuously through those).
+Each finalized `.transcript-segment` is stamped with `data-rec-sec` (seconds since
+`recordingStartedAt`) at creation, anchoring it to the same clock the retained audio uses. At Stop,
+if any audio was retained: `MeetingCore.buildWavFile()` (pure, byte-verified in evals — a canonical
+44-byte RIFF/WAVE header, no compression library needed) wraps it, `uint8ToBase64()` (chunked to
+avoid the call-stack limit `btoa(String.fromCharCode(...bytes))` hits well before a real meeting's
+size) encodes it, and the result goes to OpenRouter with diarization on.
+`applyDiarizationLabels()` matches each segment's `data-rec-sec` against the returned segments'
+`[start, end]` windows (falling back to the closest one for a segment landing just outside every
+window) and stamps the existing `.seg-speaker`/`data-speaker` badge — the same UI the 2-way
+speaker-split feature already uses, extended with CSS classes C-F for more than 2 diarized
+speakers, cycling past Z for an unusually large meeting.
+
+Two things this can't fully verify without a real OpenRouter account and a real meeting:
+1. **Whether MAI-Transcribe-2 actually processes a typical meeting's audio within the 60-second
+   upstream timeout OpenRouter documents.** If not, a long/slow meeting needs splitting into
+   multiple requests — and speaker labels do **not** persist across separate requests (chunk 2's
+   "Speaker 0" isn't guaranteed to be the same physical person as chunk 1's). No chunking is
+   implemented yet; an oversized/slow meeting currently just fails the request outright rather than
+   silently mislabeling anyone, which is the safer failure mode until this is confirmed live.
+2. **Real per-meeting cost** (~$0.10/hour of audio per the model listing) and whether Azure's
+   diarization actually distinguishes mic vs. system-audio speakers well in this app's specific
+   mixed-mono capture path (vs. a clean multi-speaker recording it may have been tuned against).
+
+Sharp edge: raw PCM16 mono audio is ~115MB/hour in browser memory while retained — fine for a
+typical meeting, a real concern for an exceptionally long one. Nothing is ever written to disk;
+`clearAll()` and a successful (or failed) diarization attempt both discard it immediately.
+
 ## 4. Known limitations / sharp edges (as of 2026-08-18)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

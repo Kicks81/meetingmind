@@ -1192,6 +1192,46 @@ check('markdownToRtf — escapes a literal open brace',
 check('markdownToRtf — escapes a literal close brace',
   /\\\}/.test(core.markdownToRtf('Formula: {x}')), true);
 
+// ── buildWavFile (G4, post-meeting speaker diarization) ─────────────────────
+// A diarization API rejecting a malformed WAV silently wastes the one
+// post-meeting attempt, so this verifies the canonical RIFF/WAVE header
+// byte-for-byte via a small parser (safer and more self-documenting than
+// hand-typing the expected 44-byte array) rather than just "did it not throw".
+function readWavHeader(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const str = (offset, len) => String.fromCharCode(...bytes.slice(offset, offset + len));
+  return {
+    riff: str(0, 4),
+    riffChunkSize: view.getUint32(4, true),
+    wave: str(8, 4),
+    fmt: str(12, 4),
+    fmtChunkSize: view.getUint32(16, true),
+    audioFormat: view.getUint16(20, true),
+    numChannels: view.getUint16(22, true),
+    sampleRate: view.getUint32(24, true),
+    byteRate: view.getUint32(28, true),
+    blockAlign: view.getUint16(32, true),
+    bitsPerSample: view.getUint16(34, true),
+    dataTag: str(36, 4),
+    dataLength: view.getUint32(40, true),
+  };
+}
+
+const wavTestPcm = new Uint8Array([0x01, 0x00, 0xff, 0x7f]); // 2 little-endian int16 samples: 1, 32767
+const wavOut = core.buildWavFile(16000, wavTestPcm);
+const wavHdr = readWavHeader(wavOut);
+
+check('buildWavFile — total length = 44-byte header + data', wavOut.length, 44 + wavTestPcm.length);
+check('buildWavFile — RIFF/WAVE/fmt/data chunk tags', [wavHdr.riff, wavHdr.wave, wavHdr.fmt, wavHdr.dataTag], ['RIFF', 'WAVE', 'fmt ', 'data']);
+check('buildWavFile — RIFF chunk size = 36 + data length', wavHdr.riffChunkSize, 36 + wavTestPcm.length);
+check('buildWavFile — fmt chunk size = 16 (PCM)', wavHdr.fmtChunkSize, 16);
+check('buildWavFile — audio format = 1 (PCM, uncompressed)', wavHdr.audioFormat, 1);
+check('buildWavFile — mono, 16kHz, 16-bit', [wavHdr.numChannels, wavHdr.sampleRate, wavHdr.bitsPerSample], [1, 16000, 16]);
+check('buildWavFile — byteRate = sampleRate * channels * bytesPerSample', wavHdr.byteRate, 16000 * 1 * 2);
+check('buildWavFile — blockAlign = channels * bytesPerSample', wavHdr.blockAlign, 1 * 2);
+check('buildWavFile — data chunk length matches input', wavHdr.dataLength, wavTestPcm.length);
+check('buildWavFile — PCM data bytes preserved verbatim after the header', [...wavOut.slice(44)], [...wavTestPcm]);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {
