@@ -4128,6 +4128,47 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
     return true;
   }
 
+  // G5: RTF, not a true .docx — a zip library from a CDN would break fully
+  // offline/file:// use and add the project's first runtime dependency (see
+  // CLAUDE.md). RTF is plain text, needs nothing extra, and Word/LibreOffice/
+  // Google Docs all open it natively — the .doc extension is what most users
+  // actually mean by "export as .doc".
+  function downloadWordDocFile(notePath, md) {
+    const rtf = MeetingCore.markdownToRtf(md);
+    const blob = new Blob([rtf], { type: 'application/rtf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${notePath}.doc`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // Same no-Obsidian fallback as downloadEntireMeetingAsMarkdown, just landing
+  // in a Word-openable file instead of a .md file.
+  async function downloadEntireMeetingAsWordDoc() {
+    const chunk = await buildObsidianChunkMarkdown(Infinity);
+    if (!chunk) {
+      alert('Nothing to send yet — the meeting has no content.');
+      return false;
+    }
+    downloadWordDocFile(chunk.notePath, chunk.md);
+    obsidianNotePath = chunk.notePath;
+    exportLedger.push({
+      chunkNumber: obsidianChunkNumber,
+      notePath: chunk.notePath,
+      timeStr: chunk.timeStr,
+      charCount: chunk.md.length,
+      sentAt: Date.now()
+    });
+    obsidianChunkNumber++;
+    chunk.exportedEls.forEach(el => { el.dataset.obsidianExported = '1'; invalidateSnap(el); });
+    updateExportLogUI();
+    return true;
+  }
+
   const OBSIDIAN_URI_LENGTH_LIMIT = 30000;
   // Direct-write mode has no size ceiling, so this is purely a crash-safety
   // flush interval: how much un-written text may accumulate before it is
@@ -4293,8 +4334,12 @@ ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}$
 
   async function addToObsidian() {
     if (!vaultDirHandle && !document.getElementById('obsidianVault').value.trim()) {
-      if (confirm('No Obsidian vault is set up — neither a connected vault folder nor a vault name.\n\nClick OK to download the meeting as a Markdown (.md) file instead, or Cancel to go set up Obsidian first (disk button, or enter your vault name).')) {
-        await downloadEntireMeetingAsMarkdown();
+      if (confirm('No Obsidian vault is set up — neither a connected vault folder nor a vault name.\n\nClick OK to download the meeting as a file instead, or Cancel to go set up Obsidian first (disk button, or enter your vault name).')) {
+        if (confirm('Click OK to download as a Word document (.doc), or Cancel for plain Markdown (.md).')) {
+          await downloadEntireMeetingAsWordDoc();
+        } else {
+          await downloadEntireMeetingAsMarkdown();
+        }
       }
       return;
     }

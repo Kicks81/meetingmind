@@ -73,15 +73,19 @@ known zh defect is open. Every text-logic change still needs zh/en/mixed fixture
   live-summary template part shipped as U5).
 - [ ] **G4. Speaker attribution.** Investigate BytePlus utterance speaker fields /
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
-- [ ] **G5. Word-document export for users without an Obsidian vault connected.**
-  `downloadEntireMeetingAsMarkdown()` already covers the no-vault fallback, but a
-  `.md` file is a dead end for anyone who doesn't already use Obsidian/a markdown
-  editor. Add a second download option that builds an RTF document (bold/headings/
-  bullets preserved) and saves it with a `.doc` extension — Word/LibreOffice/Google
-  Docs all open RTF natively. No new runtime dependency (a true `.docx` needs a zip
-  library from a CDN, which breaks fully-offline `file://` use — see CLAUDE.md's
-  dependency-free constraint). Reuses `buildObsidianChunkMarkdown(Infinity)`'s output
-  as the source content, same as the existing markdown download.
+- [x] **G5. Word-document export for users without an Obsidian vault connected.**
+  User request. `downloadEntireMeetingAsMarkdown()` already covered the no-vault
+  fallback, but a `.md` file is a dead end for anyone who doesn't already use
+  Obsidian/a markdown editor. Added `MeetingCore.markdownToRtf()` (core.js, with
+  zh/en/mixed round-trip eval fixtures — RTF is 7-bit ASCII, so every CJK/
+  full-width/typographic character MUST go through a `\uN` escape or Word shows
+  garbage instead) and `downloadEntireMeetingAsWordDoc()`, reusing
+  `buildObsidianChunkMarkdown(Infinity)`'s output exactly like the existing
+  markdown download. Saved with a `.doc` extension — Word/LibreOffice/Google Docs
+  all open RTF natively. No new runtime dependency: a true `.docx` needs a zip
+  library from a CDN, which breaks fully-offline `file://` use (CLAUDE.md's
+  dependency-free constraint). `addToObsidian()`'s no-vault dialog now offers a
+  choice between `.doc` and `.md`.
 
 ## P2b — Meeting Notes Specialist standard (audit 2026-08-18)
 Audited the exported note against an external "Meeting Notes Specialist" standard

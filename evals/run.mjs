@@ -1135,6 +1135,63 @@ check(
   '关于AFO integration，现在谁负责跟进？ I will follow up by Friday.'
 );
 
+// ── markdownToRtf (G5, no-Obsidian .doc export) ─────────────────────────────
+// RTF is 7-bit ASCII, so every character above it (all of CJK, for a start)
+// MUST round-trip through a \uN escape without corruption — that is the real
+// hard-constraint risk here, not just "did it not throw". This decoder
+// reverses the exact encoding markdownToRtf uses (structural markers first,
+// since content braces are always backslash-escaped and can't collide with
+// them; \uN decode; then literal backslash/brace un-escaping) and asserts the
+// result matches the original markdown byte-for-byte. It deliberately does
+// not handle a literal `{`/`}` inside bold text (a real, if rare, gap in this
+// *test* decoder only, not in production RTF readers) — so fixtures avoid
+// literal braces inside bold/bullet content and cover that escaping via a
+// separate structural check below instead.
+function decodeRtfBody(rtf) {
+  const start = rtf.indexOf('\\fs22\n') + '\\fs22\n'.length;
+  const end = rtf.lastIndexOf('\n}');
+  let body = rtf.slice(start, end);
+  body = body.replace(/\{\\b\\fs28 (.*?)\}/g, '## $1');
+  body = body.replace(/\{\\b\\fs36 (.*?)\}/g, '# $1');
+  body = body.replace(/\\bullet\\tab /g, '- ');
+  body = body.replace(/\{\\b (.*?)\}/g, '**$1**');
+  body = body.replace(/\\u(-?\d+)\?/g, (_, n) => String.fromCharCode(((parseInt(n, 10) % 65536) + 65536) % 65536));
+  body = body.replace(/\\\\/g, '\\').replace(/\\\{/g, '{').replace(/\\\}/g, '}');
+  body = body.replace(/\\par\n?/g, '\n');
+  return body.replace(/\n$/, '');
+}
+
+function checkRtfRoundTrip(name, markdown) {
+  const rtf = core.markdownToRtf(markdown);
+  const hasNonAscii = [...rtf].some(ch => ch.codePointAt(0) > 0x7f);
+  check(name + ' — no raw non-ASCII bytes in output', hasNonAscii, false);
+  const expectedPlain = markdown.replace(/^---\n[\s\S]*?\n---\n/, '');
+  check(name + ' — round-trips to the original markdown', decodeRtfBody(rtf), expectedPlain);
+}
+
+checkRtfRoundTrip('markdownToRtf — en',
+  '# Team Sync\n**Decisions**\n- Budget approved\n- Ship by Friday');
+
+checkRtfRoundTrip('markdownToRtf — zh',
+  '# 团队同步\n**决定**\n- 预算已批准\n- 周五发布');
+
+checkRtfRoundTrip('markdownToRtf — mixed',
+  '# AFO Sync 会议\n**Decisions**\n- Budget approved 预算已批准\n- 谁负责 follow up by Friday？');
+
+checkRtfRoundTrip('markdownToRtf — strips YAML frontmatter',
+  '---\ntitle: Team Sync\ndate: 2026-09-06\ntags: [meeting, meetingmind]\n---\n\n# Team Sync\n2026-09-06 10:00\n\n- Budget approved');
+
+// Real buildObsidianChunkMarkdown shape: "## Segment N — time" per chunk
+checkRtfRoundTrip('markdownToRtf — ## segment heading (real export shape)',
+  '# Team Sync\n2026-09-06 10:00\n\n## Segment 1 — 10:00:00\n**10:00:00** — Budget approved 预算已批准');
+
+check('markdownToRtf — escapes a literal backslash',
+  /\\\\/.test(core.markdownToRtf('Path: C:\\Users\\example')), true);
+check('markdownToRtf — escapes a literal open brace',
+  /\\\{/.test(core.markdownToRtf('Formula: {x}')), true);
+check('markdownToRtf — escapes a literal close brace',
+  /\\\}/.test(core.markdownToRtf('Formula: {x}')), true);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {

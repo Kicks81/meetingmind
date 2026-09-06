@@ -705,6 +705,68 @@
     return segments.join(' ');
   }
 
+  // ── Markdown -> RTF (G5, no-Obsidian .doc export) ────────────────────────
+  // RTF is 7-bit ASCII; every character outside it (all of CJK, full-width
+  // punctuation, curly quotes, emoji) MUST go through a \uN escape or Word
+  // renders garbage instead of the real text. \u takes a SIGNED 16-bit value,
+  // so code units >= 0x8000 are represented as (code - 0x10000) — RTF has no
+  // native concept of UTF-16 surrogate pairs, so each UTF-16 code unit is
+  // escaped individually (the long-established convention every RTF reader,
+  // including Word, actually implements) rather than combining surrogates
+  // into one Unicode code point first.
+  function rtfEscapeChar(code) {
+    if (code === 0x5c) return '\\\\';
+    if (code === 0x7b) return '\\{';
+    if (code === 0x7d) return '\\}';
+    if (code < 0x80) return String.fromCharCode(code);
+    var signed = code >= 0x8000 ? code - 0x10000 : code;
+    return '\\u' + signed + '?';
+  }
+
+  function rtfEscapeText(text) {
+    var out = '';
+    for (var i = 0; i < text.length; i++) out += rtfEscapeChar(text.charCodeAt(i));
+    return out;
+  }
+
+  // Only markdown grammar the app actually produces (see formatSummaryHtml):
+  // "- "/"* "/"• " bullets and "**bold**" spans. buildObsidianChunkMarkdown
+  // additionally adds one literal "# Title" line and one "## Segment N — time"
+  // line per chunk of its own.
+  function rtfInline(text) {
+    var parts = text.split(/\*\*(.+?)\*\*/); // odd indices are the bold spans
+    var out = '';
+    for (var i = 0; i < parts.length; i++) {
+      var seg = rtfEscapeText(parts[i]);
+      out += (i % 2 === 1) ? ('{\\b ' + seg + '}') : seg;
+    }
+    return out;
+  }
+
+  function markdownToRtf(markdown) {
+    var body = (markdown || '');
+    // buildObsidianChunkMarkdown's YAML frontmatter is Obsidian-specific
+    // metadata with no Word equivalent — drop it, the "# Title" line right
+    // after it already carries the meeting name into the document.
+    var fm = body.match(/^---\n[\s\S]*?\n---\n/);
+    if (fm) body = body.slice(fm[0].length);
+
+    var lines = body.replace(/\r\n/g, '\n').split('\n');
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (line.trim() === '') { out.push('\\par'); continue; }
+      var h2 = line.match(/^##\s+(.*)$/); // checked first for clarity — "^#\s+" below never actually matches "## ..." (no whitespace right after the first #), but this keeps the more-specific pattern first regardless
+      var h1 = line.match(/^#\s+(.*)$/);
+      var bullet = line.match(/^[-*•]\s+(.*)$/);
+      if (h2) out.push('{\\b\\fs28 ' + rtfInline(h2[1]) + '}\\par');
+      else if (h1) out.push('{\\b\\fs36 ' + rtfInline(h1[1]) + '}\\par');
+      else if (bullet) out.push('\\bullet\\tab ' + rtfInline(bullet[1]) + '\\par');
+      else out.push(rtfInline(line) + '\\par');
+    }
+    return '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Calibri;}}\\f0\\fs22\n' + out.join('\n') + '\n}';
+  }
+
   return {
     parseSpeakerSplit,
     dominantLanguage,
@@ -754,5 +816,6 @@
     determineExportStatus,
     pickFullMeetingSource,
     rebuildContextFromSegments,
+    markdownToRtf,
   };
 });
