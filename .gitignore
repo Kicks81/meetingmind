@@ -2,3 +2,5 @@ node_modules/
 meetingmind-config.json
 *.log
 .claude/settings.local.json
+
+.audit/

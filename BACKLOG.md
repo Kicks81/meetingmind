@@ -4,9 +4,24 @@ Ordered by (user impact × risk of data loss × Chinese-language correctness).
 The loop always takes the top unchecked item. Add new findings to the right tier;
 never silently delete an item — strike it through with a reason.
 
-## P0 — Chinese/English correctness (core requirement, currently broken for zh)
+## P0 — Chinese/English correctness (core requirement; release-blocking)
+*(Empty. Cleared by Z4 — do not read the emptiness as "zh is done"; it means no
+known zh defect is open. Every text-logic change still needs zh/en/mixed fixtures.)*
 
 ## P1 — Data safety & reliability
+- [ ] **A5. Same title + same day silently overwrites the earlier meeting.** The note
+  path is `{folder}/{YYYY-MM}/{date} - {title}`. Two meetings on one day whose
+  LLM-suggested titles collide resolve to the same path, and because `isFirstChunk`
+  is true for the second one it writes with `append: false` — destroying the first
+  meeting's note. Needs a collision check in `buildObsidianChunkMarkdown` (suffix
+  ` (2)`, or detect an existing file and append instead). Found while fixing V2;
+  pre-existing and unrelated to that change.
+- [ ] **`.qa-answer` exports as run-on text.** Identical defect to the one V3 fixed for
+  summaries: the export reads `.qa-answer.textContent`, but the element holds
+  `formatSummaryHtml` output, so bullets and bold are stripped and no newlines survive
+  between blocks. Fix the same way — stash the raw markdown at generation time and read
+  it through a `summaryMarkdown`-style helper (see DEVELOPMENT.md D33). Add `m` to
+  `snapQA` as an additive optional field; do NOT bump `snap.v`.
 - [x] **E9. Suggested questions no longer export as if they were asked.** Role-lens
   suggestions are `.qa-card`s, so the Obsidian export wrote them as `**Q:**` —
   indistinguishable from questions actually asked, i.e. fabricated meeting content.
@@ -52,10 +67,80 @@ never silently delete an item — strike it through with a reason.
 - [ ] **G4. Speaker attribution.** Investigate BytePlus utterance speaker fields /
   channel separation (mic vs system stream = "me" vs "them") for cheap 2-way diarization.
 
+## P2b — Meeting Notes Specialist standard (audit 2026-08-18)
+Audited the exported note against an external "Meeting Notes Specialist" standard
+(a 4-section record: Date & Attendees / Decisions / Action Items / Open Questions,
+all four always present, nothing invented). The app already meets or exceeds most of
+it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
+**Discussed (not decided)** split goes beyond the standard. These are the real gaps.
+
+- [ ] **A1. Attendees are absent entirely.** Not in frontmatter (`title/date/tags`
+  only), not in the note header, no UI field — so an action item's owner cannot be
+  resolved weeks later. Decision already taken: a manual free-text field in the header,
+  and it must **NOT** go in `PERSISTED_FIELDS` — that set is also the config-export set
+  (`saveConfig`), and since `SECRET_FIELDS` is keys-only, attendee names would be
+  written **unencrypted** into `meetingmind-config.json`. A roster carried over from
+  yesterday names people who were not there, which is fabricated attendance. Include in
+  the autosave snapshot (crash recovery within one meeting); `clearAll()` must wipe it.
+  Build the section **deterministically — never send names to the LLM**: it minimises
+  PDPA exposure and stops a model *assigning* an owner from a roster.
+- [ ] **A2. "All four sections always present" is self-contradictory in one prompt.**
+  The final-synthesis system prompt says an empty section still gets `- [None recorded]`,
+  but `actionsInstruction` says *"omit the **Action Items** section entirely"*. A missing
+  heading leaves the reader unable to tell "no actions" from "the extractor failed".
+  Same line also concatenates the curated list straight onto `TRANSCRIPT_IS_DATA` with
+  no separating newline, so the last action reads as part of the instructions.
+- [ ] **A3. Action items do not reliably carry an owner.** The prompt asks for
+  `what — owner — due`, but the curated list is injected as free text with *"rephrase
+  minimally"*. Fix in the **final-synthesis prompt only**. Do NOT restructure
+  `detectActionItems`' output: `actionKey`/`dismissedActions` keys derive from the whole
+  action string, so changing the format resurfaces every dismissed false positive across
+  a restore, breaking the D17 guarantee. Also pin the placeholders to English —
+  `languageInstruction` would otherwise emit `[负责人：未分配]` on a zh meeting and make
+  the exact strings CONTRACT.md names ungreppable.
+- [ ] **A4. The 4-section record is buried at the bottom of the note.** Export is
+  chronological `## Segment N` blocks and the final synthesis is just another block
+  inside the *last* one. Moving it to the top needs a full-note overwrite in the most
+  dangerous code in the app — do it only after D33's V3, guard it with a
+  "chronological tail is byte-identical" tripwire, and note it is **impossible on the
+  `obsidian://` path** (no read, no acknowledgement, 30k cap).
+- [ ] **A6. Frontmatter is written once, on chunk 1**, so a late-joining attendee never
+  reaches the YAML. Partly mitigated by the body section written at Stop. Probably
+  document as a sharp edge rather than fix.
+
 ## P3 — Engineering health
 - [ ] **L3. Fix stray `btn` element selector** (`btn, .btn` in CSS, meeting.html:69).
+- [ ] **Stale docs.** CLAUDE.md still says `evals/run.mjs` doesn't exist yet ("backlog
+  item L0") and still describes export as `obsidian://new` append chunks — replaced by
+  D28/E5. CONTRACT.md says 218 evals; the suite is at 258.
+- [ ] **`origin/main` is ~1 month behind HEAD** — the whole E1–E9 arc appears unpushed.
+- [ ] **Remove the `TEMPORARY DIAGNOSTIC` system-audio peak logger** in meeting.html
+  (~line 2320), or promote it into the diagnostics drawer (E4) if it is still useful.
 
 ## Done
+- [x] **V3. Export carries markdown again, not run-on text.** `buildObsidianChunkMarkdown`
+  read `.summary-text.textContent`, but that element holds `formatSummaryHtml` output —
+  `- ` markers stripped, `**bold**` turned into `<mark>`, and `textContent` adds no
+  newlines across block elements. Every summary arrived in the vault as one line. Verified
+  in the browser before the fix; the zh case was `预算已批准下一步是UAT签核`.
+  `consolidatedSource()` read the same way, so the consolidation prompt had been eating
+  run-on text since D30. Both now use `summaryMarkdown()`. (commit `V3:`)
+- [x] **V2. Obsidian export is one action again.** The multi-click export was never a bug
+  in the export loop — `exportViaVaultHandle()` always wrote the entire backlog in one
+  write; it is just unreachable without a connected vault folder, and the code degraded to
+  `obsidian://` (one launch per gesture) silently. Added a connect banner on the Start
+  click (not a confirm at export time — `showDirectoryPicker()` needs live user activation
+  that the stop-path export no longer has), amber status when unconnected, and
+  `queueVaultWrite` to serialise vault writes. That last one fixed a latent race where two
+  un-awaited `checkObsidianAutoSplit()` calls both wrote with `append: false` and forked
+  the note — D28's failure mode from a new cause. (commit `V2:`)
+- [x] **V1. Summary column split into updates + consolidated panes.** The consolidated view
+  was `position: sticky` inside `#summaryPanel` and floated over the rolling updates
+  instead of having its own space. Now a second pane in a `.panel-split`, reusing the
+  `.qa-split` pattern from D17. `clearAll()` and the autosave restore both needed an
+  explicit `resetConsolidatedPanel()` — the block used to be wiped for free by resetting
+  `#summaryPanel.innerHTML`, and without the reset a previous meeting's consolidated
+  summary would sit beside a new one. (commit `V1:`)
 - [x] **S1. Explicit ASR connection state machine.** Consolidated the previously
   scattered `isRecording`, `isStartingRecording`, and `asrReconnecting` booleans
   into a single state object with validated transitions. The transition table

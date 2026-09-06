@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "meeting-html",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8080"],
-      "port": 8080
+      "name": "meetingmind-relay",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["relay.js", "8765"],
+      "port": 8765
     }
   ]
 }

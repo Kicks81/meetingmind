@@ -692,14 +692,106 @@ but a zh-locale model told to emit `- [role] …` frequently answers with `・`,
 question text. And the pinned consolidated block was inserted empty before its
 stream began, so a slow API showed a blank box; it now reads "Consolidating…".
 
-## 4. Known limitations / sharp edges (as of 2026-08-02)
+### D33. Summary column split, one-click export, and markdown fidelity (V1/V2/V3, 2026-08-18)
+
+Three user-reported problems, one commit each. They turned out to be connected:
+the second and third were both caused by reading rendered HTML back as text.
+
+**V1 — the consolidated view had its own pane instead of floating.** D30 pinned it
+with `position: sticky; top: 0` inside `#summaryPanel`, which meant it *covered*
+the topmost rolling updates rather than having room of its own. It now lives in
+`#consolidatedPanel`, a second `.panel-body` in a `.panel-split` — the same
+pattern the Q&A panel has used since D17 (top Q&A / bottom Action Required), so
+`.qa-split`'s rules were generalised rather than duplicated.
+
+Two traps in that move, both of which would have shipped silently:
+
+- **`clearAll()` used to wipe the consolidated block for free**, because it reset
+  `#summaryPanel.innerHTML` and the block lived inside it. It no longer does. Without
+  an explicit reset, a consolidated summary from the previous meeting sits beside a
+  new one and reads as belonging to it — fabricated meeting content by staleness.
+  `resetConsolidatedPanel()` is now called from both `clearAll()` and the autosave
+  restore (the block is derived and deliberately not snapshotted, so restore has
+  nothing to put back and must show the empty state instead).
+- **The three `:not(.consolidated)` selectors are still load-bearing.** Scoping to
+  `#summaryPanel` now excludes the block on its own, so they *look* redundant. They
+  are kept as belt-and-braces and grep-guarded: the exclusion in `consolidatedSource()`
+  is what stops the consolidation feeding on its own output and drifting, and the one
+  in `unexportedObsidianElements()` is what stops a near-duplicate of the whole
+  meeting being appended to the note every four summaries (D30).
+
+**V2 — "export takes several clicks" was never a bug in the export loop.**
+`exportViaVaultHandle()` has always written the *entire* backlog in one write
+(`buildObsidianChunkMarkdown()` with no `maxItems` bisection — there is no URI
+length limit on the direct path). But it is only reachable when a vault folder is
+connected: `ensureVaultReady()` returns false the instant `vaultDirHandle` is null,
+and the code then degraded *silently* to `obsidian://`, where Chrome permits one
+protocol navigation per user gesture — hence one section per click. The reported
+symptom was a missing on-ramp, not a defective loop.
+
+The fix is a banner offering `connectVaultFolder()`, shown from the **Start Meeting**
+click. It is deliberately **not** a `confirm()` at export time, for the D28 reason:
+`showDirectoryPicker()` requires transient user activation, the stop-path export runs
+after `await generateFinalSynthesis()` when that activation is long gone, and a modal
+dialog can outlive the activation window even on a fresh click. A click on the
+banner's own button is always a fresh gesture. `#vaultDirStatus` also turned amber
+when unconnected — the degraded mode used to be discoverable only *after* an export
+made you click five times.
+
+**V2c — vault writes are now serialised, fixing a latent note-corrupting race.**
+`checkObsidianAutoSplit()` is called **un-awaited** from the synchronous ASR frame
+loop, once per finalized utterance, and a reconnect backlog delivers several definite
+utterances in one frame. Each call awaits `ensureVaultReady` / `suggestMeetingTitle` /
+`writeVaultNote` before `exportViaVaultHandle` commits `obsidianNotePath`. Two
+overlapping calls therefore both saw `obsidianNotePath === null`, both computed
+`isFirstChunk = true`, and **both wrote with `append: false` — the second truncating
+the first** — while two `suggestMeetingTitle()` calls returned two different titles
+and forked the note. That is D28's exact failure mode arriving from a new cause,
+masked until now only by the 4000-char autosplit threshold. `queueVaultWrite()`
+follows the D15 `summaryQueue` precedent: `then(fn, fn)` so a rejection never breaks
+the chain, while the returned promise still rejects for the caller so
+`exportGuarded()`'s alert and retry keep working.
+
+**V3 — the export was losing every heading and bullet.** `buildObsidianChunkMarkdown`
+read `.summary-text`**`.textContent`**. That element holds `formatSummaryHtml` output,
+which strips `- ` markers and turns `**bold**` into `<mark>` — and `textContent`
+contributes **no newlines** across block elements (that is `innerText`'s job). So a
+whole summary arrived in the vault as one run-on line. Verified in the browser before
+the fix; the Chinese case, where there are no spaces either, was:
+
+    预算已批准下一步是UAT签核
+
+`consolidatedSource()` read the same way, which means **the consolidation prompt has
+been eating run-on text since D30** — a likely contributor to the drift that prompted
+V1. Both now go through `summaryMarkdown(textEl)`, which prefers raw model output
+stashed as `textEl.__md` at generation time and falls back to `textContent`.
+
+Two deliberate details:
+- The stash is **dropped when a block is hand-edited** (`toggleSummaryEdit`), because
+  the user's contenteditable text is then the truth and the stashed markdown is stale.
+- `snapSummary` stores it as an additive optional field `m` and **`snap.v` stays 2**.
+  Bumping to 3 would make every older copy of this single-file app reject the snapshot
+  outright (`KNOWN_SNAPSHOT_VERSIONS` in core.js) — trading a whole meeting for some
+  formatting. Absence of `m` degrades to the old `textContent` read, which is exactly
+  right.
+
+Still outstanding from this pass: `.qa-answer` has the identical `textContent` defect
+(backlog), and the 4-section record is still buried at the bottom of the note rather
+than at the top (backlog A4).
+
+## 4. Known limitations / sharp edges (as of 2026-08-18)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in
   the system-audio dropdown, whose permission persists.
 - Obsidian hand-off has no receipt (see D5) — full re-send is the recovery path.
 - zh questions ending without `？` (…吗 punctuated with `。` by the ASR) are missed
   by regex detection; acceptable so far, LLM-side catch is a backlog option.
-- `meetingContext` grows unboundedly during very long meetings (backlog R3).
+- `meetingContext` is capped at `MEETING_CONTEXT_CHAR_CAP` (6000 chars, tail-kept) —
+  see D13. The consequence is that `generateFinalSynthesis` reads only the TAIL of a
+  long meeting, which matters more now that the final note is the definitive record.
+  (This line previously claimed the growth was unbounded, contradicting D13.)
+- `.qa-answer` still exports via `.textContent`, so multi-bullet answers arrive in the
+  vault as one run-on line — the same defect V3 fixed for summaries (see D33).
 - One meeting at a time; no history browser (autosave holds only the latest session).
 - Evals cover core.js logic + a few DOM-wiring greps; audio/ASR paths need a live
   BytePlus key and are manually tested only.

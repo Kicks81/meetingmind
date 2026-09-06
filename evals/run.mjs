@@ -617,6 +617,56 @@ check('meeting.html restore validates the snapshot before touching the page', ht
 check('meeting.html restore sanitizes stored summary/Q&A HTML before re-injection', html.includes('MeetingCore.sanitizeStoredHtml'), true);
 check('meeting.html snapshotState writes schema v2', /v:\s*2,/.test(html), true);
 
+// ── Summary column split + one-click export (V1/V2/V3) ─────────────────────
+// These are grep guards on decisions that look like tidy-up targets but are
+// load-bearing. Each one broke, or would have broken, something real.
+
+// V1 — the consolidated view has its own pane instead of floating over the updates.
+check('meeting.html has a separate consolidated panel', html.includes('id="consolidatedPanel"'), true);
+check('meeting.html renders the consolidated block into consolidatedPanel', html.includes("getElementById('consolidatedPanel')"), true);
+// It used to be position:sticky inside #summaryPanel — that IS the overlap bug.
+check('meeting.html no longer positions the consolidated block sticky', /\.summary-block\.consolidated\s*\{[^}]*position:\s*sticky/.test(html), false);
+// Clear and restore must both reset the new pane. Before the split, resetting
+// #summaryPanel.innerHTML wiped the consolidated block for free; it no longer
+// does, so a stale consolidated summary would sit beside a NEW meeting.
+check('meeting.html has a single consolidated-pane reset helper', html.includes('function resetConsolidatedPanel('), true);
+check('meeting.html clearAll resets the consolidated pane', /function clearAll\([\s\S]{0,2000}?resetConsolidatedPanel\(\)/.test(html), true);
+check('meeting.html autosave restore resets the consolidated pane', /snap\.summaries[\s\S]{0,1200}?resetConsolidatedPanel\(\)/.test(html), true);
+// Belt-and-braces: scoping to #summaryPanel already excludes the block now, but
+// :not(.consolidated) is what stops the consolidation feeding on its own output
+// and drifting (D30). All three uses must survive.
+check('meeting.html keeps all three :not(.consolidated) guards (D30)',
+  (html.match(/:not\(\.consolidated\)/g) || []).filter(Boolean).length >= 3, true);
+
+// V3 — the export must carry markdown, not textContent.
+// .summary-text holds formatSummaryHtml output: textContent strips "- " and
+// **bold**, and adds NO newlines across block elements, so a whole summary
+// arrived in the vault as one run-on line (unreadable in Chinese especially).
+check('meeting.html reads summary text back as markdown', html.includes('function summaryMarkdown('), true);
+check('meeting.html export no longer reads .summary-text textContent directly', html.includes(".summary-text').textContent"), false);
+check('meeting.html export uses summaryMarkdown', /summaryBlocks\s*=\s*summaryEls\.map\([\s\S]{0,200}?summaryMarkdown\(/.test(html), true);
+check('meeting.html consolidation source uses summaryMarkdown', /consolidatedSource[\s\S]{0,400}?\.map\(summaryMarkdown\)/.test(html), true);
+check('meeting.html stashes the raw markdown on generated summaries', (html.match(/__md = /g) || []).length >= 3, true);
+check('meeting.html drops the stashed markdown when a block is hand-edited', /contenteditable[\s\S]{0,400}?__md = null/.test(html), true);
+check('meeting.html snapshots the summary markdown as an additive field', /m:\s*textEl\.__md/.test(html), true);
+
+// V2 — one-click export.
+// The multi-click export was never a bug in the export loop: exportViaVaultHandle
+// already writes the entire backlog in one write. It is only reachable with a
+// connected vault folder, and nothing guided the user there.
+check('meeting.html offers the vault connect on a fresh gesture', html.includes('id="vaultHintBanner"'), true);
+check('meeting.html shows the vault hint from the Start click, not the export path', /function toggleRecording\([\s\S]{0,900}?maybeShowVaultHint\(\)/.test(html), true);
+// showDirectoryPicker() needs transient user activation; the stop-path export
+// runs after `await generateFinalSynthesis()`, when it is long gone (D28's rule).
+// So the picker must NOT be invoked from the export path.
+check('meeting.html never opens the folder picker from the export path', /function sendAllObsidianChunks\([\s\S]{0,900}?connectVaultFolder\(/.test(html), false);
+// Vault writes are serialised: checkObsidianAutoSplit() is fired un-awaited from
+// the ASR frame loop, and two overlapping calls both saw notePath === null, both
+// wrote with append:false (second truncating the first) and forked the note.
+check('meeting.html serialises vault writes', html.includes('function queueVaultWrite('), true);
+check('meeting.html routes vault export through the write queue', /function exportViaVaultHandle\(\)\s*\{\s*return queueVaultWrite\(runExportViaVaultHandle\)/.test(html), true);
+check('meeting.html write queue survives a rejected write', /vaultWriteQueue = run\.catch\(/.test(html), true);
+
 // ── BytePlus ASR frame build/parse (F1) ────────────────────────────────────
 // Byte-level protocol fixtures, gzip-free — parseAsrFrame only needs to hand
 // back the raw payload bytes + metadata; gunzip is the caller's job.
