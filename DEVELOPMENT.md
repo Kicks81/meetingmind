@@ -925,6 +925,22 @@ Sharp edge: raw PCM16 mono audio is ~115MB/hour in browser memory while retained
 typical meeting, a real concern for an exceptionally long one. Nothing is ever written to disk;
 `clearAll()` and a successful (or failed) diarization attempt both discard it immediately.
 
+**Follow-up fix (same day): the exported note wasn't getting the speaker labels either.**
+Diarization runs *after* the Stop-path export already wrote the transcript to disk, so the file
+never got the "(Speaker A)" annotations the live DOM badges show. Fixed with a per-line splice,
+not a full-section rebuild: `applyDiarizationLabels()` now returns which elements actually
+changed, with each one's PRIOR speaker (it may already carry a label from the unrelated 2-way
+speaker-split feature — `maybeSplitSpeakers`/`buildSegmentElement`'s own `speakerLabel` param —
+so "prior" isn't always "none"). `spliceDiarizationIntoExportedNote()` reconstructs each changed,
+already-exported segment's exact old/new transcript line and hands them to
+`MeetingCore.spliceLinesIntoText(fullText, replacements)`: unlike `restructureFinalSummaryToTop`'s
+all-or-nothing structural move, this is deliberately per-line independent — each replacement's
+`oldLine` must occur in the file **exactly once** to be applied; an ambiguous (2+) or unmatched (0)
+line is skipped on its own (logged), not a reason to also lose the other lines that matched
+cleanly. Same read-back-via-`readVaultNoteFullText`, write-back-via-`writeVaultNote(path, text,
+false)` pattern A4 established; same "impossible on the `obsidian://` path, silent no-op without
+`vaultDirHandle`" reasoning.
+
 ## 4. Known limitations / sharp edges (as of 2026-08-18)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

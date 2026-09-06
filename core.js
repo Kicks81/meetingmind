@@ -759,6 +759,28 @@
     return { ok: true, restructured };
   }
 
+  // ── Splice independent single-line replacements into exported text ──────
+  // Used by G4 to retrofit post-export diarization speaker labels into an
+  // already-exported note's transcript lines. Unlike
+  // restructureFinalSummaryToTop (one all-or-nothing structural move), this
+  // touches N independent lines, so it is NOT all-or-nothing: each
+  // replacement is checked to occur EXACTLY once before being applied (0 =
+  // not found, 2+ = ambiguous — never guess which occurrence), and a
+  // skipped/unmatched line just means that one line stays as originally
+  // exported, not a reason to also lose the others that matched cleanly.
+  function spliceLinesIntoText(fullText, replacements) {
+    let text = fullText || '';
+    let appliedCount = 0, skippedCount = 0;
+    for (const { oldLine, newLine } of (replacements || [])) {
+      if (!oldLine || oldLine === newLine) { skippedCount++; continue; }
+      const occurrences = text.split(oldLine).length - 1;
+      if (occurrences !== 1) { skippedCount++; continue; }
+      text = text.split(oldLine).join(newLine);
+      appliedCount++;
+    }
+    return { restructured: text, appliedCount, skippedCount };
+  }
+
   // ── Markdown -> RTF (G5, no-Obsidian .doc export) ────────────────────────
   // RTF is 7-bit ASCII; every character outside it (all of CJK, full-width
   // punctuation, curly quotes, emoji) MUST go through a \uN escape or Word
@@ -910,5 +932,6 @@
     markdownToRtf,
     buildWavFile,
     restructureFinalSummaryToTop,
+    spliceLinesIntoText,
   };
 });

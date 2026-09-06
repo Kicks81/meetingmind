@@ -1274,6 +1274,48 @@ check('restructureFinalSummaryToTop — aborts on missing/empty inputs',
   [core.restructureFinalSummaryToTop('', a4Synthesis).ok, core.restructureFinalSummaryToTop(a4FullText, '').ok],
   [false, false]);
 
+// ── spliceLinesIntoText (G4 export gap: post-export diarization labels) ─────
+// Independent-per-line, unlike restructureFinalSummaryToTop's all-or-nothing
+// move: one ambiguous/unmatched replacement must be skippable without losing
+// the others that matched cleanly.
+
+const splice1 = '**10:00:00** — We approved the budget.\n**10:05:00** — Anything else? No.';
+const spliceResult1 = core.spliceLinesIntoText(splice1, [
+  { oldLine: '**10:00:00** — We approved the budget.', newLine: '**10:00:00** (Speaker A) — We approved the budget.' },
+  { oldLine: '**10:05:00** — Anything else? No.', newLine: '**10:05:00** (Speaker B) — Anything else? No.' },
+]);
+check('spliceLinesIntoText — applies multiple independent, unambiguous replacements',
+  spliceResult1.restructured,
+  '**10:00:00** (Speaker A) — We approved the budget.\n**10:05:00** (Speaker B) — Anything else? No.');
+check('spliceLinesIntoText — reports both applied, none skipped', [spliceResult1.appliedCount, spliceResult1.skippedCount], [2, 0]);
+
+// zh content — the function doesn't interpret text at all, but confirm no
+// mangling of multi-byte content through the same split/join mechanism.
+const splice2 = '**10:00:00** — 预算已批准。';
+const spliceResult2 = core.spliceLinesIntoText(splice2, [
+  { oldLine: '**10:00:00** — 预算已批准。', newLine: '**10:00:00** (Speaker A) — 预算已批准。' },
+]);
+check('spliceLinesIntoText — zh content applies correctly', spliceResult2.restructured, '**10:00:00** (Speaker A) — 预算已批准。');
+
+// One ambiguous (occurs twice) and one missing (occurs zero times) replacement
+// alongside one good one — only the good one should be applied; the other
+// two are skipped, not a reason to fail the whole batch.
+const splice3 = '**10:00:00** — Hello.\n**10:00:00** — Hello.\n**10:05:00** — Goodbye.';
+const spliceResult3 = core.spliceLinesIntoText(splice3, [
+  { oldLine: '**10:00:00** — Hello.', newLine: '**10:00:00** (Speaker A) — Hello.' }, // occurs twice -> ambiguous, skip
+  { oldLine: '**09:00:00** — Not present.', newLine: '**09:00:00** (Speaker A) — Not present.' }, // occurs zero times -> skip
+  { oldLine: '**10:05:00** — Goodbye.', newLine: '**10:05:00** (Speaker B) — Goodbye.' }, // occurs once -> applied
+]);
+check('spliceLinesIntoText — skips ambiguous/missing lines but still applies the unambiguous one',
+  spliceResult3.restructured,
+  '**10:00:00** — Hello.\n**10:00:00** — Hello.\n**10:05:00** (Speaker B) — Goodbye.');
+check('spliceLinesIntoText — reports 1 applied, 2 skipped', [spliceResult3.appliedCount, spliceResult3.skippedCount], [1, 2]);
+
+check('spliceLinesIntoText — a no-op replacement (oldLine === newLine) is skipped, not applied',
+  core.spliceLinesIntoText('unchanged text', [{ oldLine: 'unchanged text', newLine: 'unchanged text' }]).appliedCount, 0);
+check('spliceLinesIntoText — empty replacements list is a clean no-op',
+  core.spliceLinesIntoText('some text', []), { restructured: 'some text', appliedCount: 0, skippedCount: 0 });
+
 // ── Report ─────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${knownBugs} known-bug fixtures (Z1/Z2/Z3), ${failed} failed`);
 for (const f of failures) {

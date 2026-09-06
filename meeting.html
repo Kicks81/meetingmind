@@ -3468,17 +3468,29 @@
       throw new Error(`Diarization request failed: HTTP ${res.status}${bodyText ? ' — ' + bodyText.slice(0, 200) : ''}`);
     }
     const json = await res.json();
-    applyDiarizationLabels(json.segments);
+    const changed = applyDiarizationLabels(json.segments);
+    try {
+      await spliceDiarizationIntoExportedNote(changed);
+    } catch (err) {
+      // Independent of the labeling above, which already succeeded (the live
+      // UI has its speaker badges either way) — a splice failure just means
+      // the already-exported file doesn't get them too this time.
+      console.warn('G4: could not splice speaker labels into the exported note (DOM labels are unaffected):', err.message);
+    }
   }
 
   // Matches each stamped .transcript-segment (data-rec-sec, seconds since
   // recordingStartedAt — the same clock the WAV was built against) to the
   // diarization segment whose [start, end] window contains it, falling back
   // to the closest one by start time for a segment that lands just outside
-  // every window (rounding at chunk/utterance boundaries).
+  // every window (rounding at chunk/utterance boundaries). Returns the
+  // elements that actually gained/changed a speaker label — the caller needs
+  // that list (with each one's PRIOR speaker) to know which exported
+  // transcript lines need updating (see spliceDiarizationIntoExportedNote).
   function applyDiarizationLabels(segments) {
-    if (!Array.isArray(segments) || !segments.length) return;
+    if (!Array.isArray(segments) || !segments.length) return [];
     const els = [...document.querySelectorAll('#transcriptPanel .transcript-segment.final[data-rec-sec]')];
+    const changed = [];
     for (const el of els) {
       const t = parseFloat(el.dataset.recSec);
       if (Number.isNaN(t)) continue;
@@ -3489,6 +3501,8 @@
       );
       if (!match || typeof match.speaker !== 'number') continue;
       const label = String.fromCharCode(65 + (match.speaker % 26)); // 0->A, 1->B, ... cycles past Z on an unusually large meeting
+      const oldSpeaker = el.dataset.speaker || null; // may already be set by the unrelated 2-way speaker-split feature
+      if (oldSpeaker === label) continue; // already correct — nothing changed, nothing to splice
       el.dataset.speaker = label;
       let badge = el.querySelector('.seg-speaker');
       if (!badge) {
@@ -3498,7 +3512,50 @@
       badge.className = `seg-speaker seg-speaker-${label}`;
       badge.textContent = `Speaker ${label}`;
       invalidateSnap(el);
+      changed.push({ el, oldSpeaker, newSpeaker: label });
     }
+    return changed;
+  }
+
+  // Splices the newly-applied speaker labels into the already-exported note,
+  // for segments that were exported BEFORE diarization ran (so the file still
+  // has their pre-diarization line — no speaker suffix, or whatever the
+  // 2-way speaker-split feature had already given them). Each replacement is
+  // independently verified to occur EXACTLY once before being applied — same
+  // tripwire discipline as A4's restructureExportedNote, just per-line rather
+  // than per-file, since a splice touching N independent lines shouldn't be
+  // all-or-nothing: one ambiguous/unmatched line is skipped on its own
+  // (logged), not a reason to also lose the other N-1 that matched cleanly.
+  // Impossible on the obsidian://-URI path, same reasoning as A4.
+  async function spliceDiarizationIntoExportedNote(changed) {
+    if (!vaultDirHandle || !obsidianNotePath || !changed.length) return;
+    const exportedChanges = changed.filter(c => c.el.dataset.obsidianExported === '1');
+    if (!exportedChanges.length) return; // nothing changed was actually written to disk yet
+
+    const replacements = exportedChanges.map(({ el, oldSpeaker, newSpeaker }) => {
+      const time = el.querySelector('.transcript-time').textContent;
+      const text = el.querySelector('.seg-text').textContent;
+      const oldSuffix = oldSpeaker ? ` (Speaker ${oldSpeaker})` : '';
+      return {
+        oldLine: `**${time}**${oldSuffix} — ${text}`,
+        newLine: `**${time}** (Speaker ${newSpeaker}) — ${text}`
+      };
+    });
+
+    let fullText;
+    try {
+      fullText = await readVaultNoteFullText(obsidianNotePath);
+    } catch (err) {
+      console.warn('G4: could not read back the exported note to splice speaker labels in; leaving it as-is:', err.message);
+      return;
+    }
+
+    const result = MeetingCore.spliceLinesIntoText(fullText, replacements);
+    if (result.appliedCount === 0) return; // nothing could be safely matched — file left exactly as it was
+    if (result.skippedCount > 0) {
+      console.warn(`G4: ${result.skippedCount} of ${replacements.length} speaker-label line(s) could not be safely matched in the exported note and were left as originally exported.`);
+    }
+    await writeVaultNote(obsidianNotePath, result.restructured, false);
   }
 
   function deleteSegment(el) {

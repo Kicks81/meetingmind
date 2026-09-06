@@ -162,16 +162,18 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   already-exported file exactly as it was; this only ever runs *after* a successful
   export, never blocking or risking it. Impossible on the `obsidian://` path (no read
   access to the file at all), so it silently no-ops without `vaultDirHandle`.
-- [ ] **Diarization labels (G4) don't reach the exported note.** `applyDiarizationLabels()`
-  stamps `.transcript-segment` badges in the live DOM, but diarization runs *after* the
-  Stop-path export already wrote the transcript to disk — so the note never gets the
-  "(Speaker A)" annotations `buildObsidianChunkMarkdown`'s transcript-line builder would
-  otherwise add from `el.dataset.speaker`. Found while implementing A4 (which reads the
-  file back anyway) but is a distinct gap, not in scope for A4 itself. Likely fix: once
-  diarization finishes, rebuild just the `**Transcript**` section(s) from the live DOM
-  (now speaker-labeled) and splice them back in via the same read-back-and-rewrite
-  pattern A4 established — same tripwire discipline required, since it's another
-  full-file rewrite.
+- [x] **Diarization labels (G4) didn't reach the exported note.** `applyDiarizationLabels()`
+  stamped `.transcript-segment` badges in the live DOM, but diarization runs *after* the
+  Stop-path export already wrote the transcript to disk, so the note never got the
+  "(Speaker A)" annotations. Fixed with a per-line splice, not a full-section rebuild —
+  `applyDiarizationLabels()` now returns which elements actually changed (with each
+  one's PRIOR speaker, since it may already carry a label from the unrelated 2-way
+  speaker-split feature); `spliceDiarizationIntoExportedNote()` reconstructs each
+  changed, already-exported segment's exact old/new line and hands them to
+  `MeetingCore.spliceLinesIntoText()` (pure, eval-tested), which verifies each
+  replacement occurs **exactly once** before applying it — independently per line
+  (unlike A4's all-or-nothing move), so one ambiguous/unmatched line is skipped on its
+  own rather than losing the others that matched cleanly.
 - [x] **A6. The note header (including A1's Attendees line) is written once, on
   chunk 1**, so a late-joining attendee never reaches it — updating the attendees
   field mid-meeting only affects a future meeting, not the one already in progress.
