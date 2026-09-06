@@ -94,16 +94,18 @@ all four always present, nothing invented). The app already meets or exceeds mos
 it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
 **Discussed (not decided)** split goes beyond the standard. These are the real gaps.
 
-- [ ] **A1. Attendees are absent entirely.** Not in frontmatter (`title/date/tags`
-  only), not in the note header, no UI field — so an action item's owner cannot be
-  resolved weeks later. Decision already taken: a manual free-text field in the header,
-  and it must **NOT** go in `PERSISTED_FIELDS` — that set is also the config-export set
-  (`saveConfig`), and since `SECRET_FIELDS` is keys-only, attendee names would be
-  written **unencrypted** into `meetingmind-config.json`. A roster carried over from
-  yesterday names people who were not there, which is fabricated attendance. Include in
-  the autosave snapshot (crash recovery within one meeting); `clearAll()` must wipe it.
-  Build the section **deterministically — never send names to the LLM**: it minimises
-  PDPA exposure and stops a model *assigning* an owner from a roster.
+- [x] **A1. Attendees are absent entirely.** Added a manual free-text `#attendees`
+  input in the header toolbar, written **deterministically** into the note header
+  (`Attendees: ...`, right after the date/time line — `[None recorded]` when empty) —
+  never sent to the LLM, so a model can't invent attendance from a roster or use it to
+  *assign* an owner. Deliberately **NOT** in `PERSISTED_FIELDS` (that set is also the
+  config-export set for `saveConfig`, and since `SECRET_FIELDS` is keys-only, attendee
+  names would otherwise land unencrypted in `meetingmind-config.json`) and reset to `''`
+  on every `clearAll()`, so a roster from a past meeting can never carry over and be
+  reported as attendance that didn't happen. It IS included in the autosave snapshot
+  (additive `attendees` field, does not bump `snap.v`) purely for crash recovery within
+  the *same* meeting — a page reload mid-meeting restores it, a genuinely new meeting
+  starts blank.
 - [x] **A2. "All four sections always present" is self-contradictory in one prompt.**
   The final-synthesis system prompt said an empty section still gets `- [None recorded]`,
   but `actionsInstruction` said *"omit the **Action Items** section entirely"*. Now
@@ -131,9 +133,12 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
   dangerous code in the app — do it only after D33's V3, guard it with a
   "chronological tail is byte-identical" tripwire, and note it is **impossible on the
   `obsidian://` path** (no read, no acknowledgement, 30k cap).
-- [ ] **A6. Frontmatter is written once, on chunk 1**, so a late-joining attendee never
-  reaches the YAML. Partly mitigated by the body section written at Stop. Probably
-  document as a sharp edge rather than fix.
+- [x] **A6. The note header (including A1's Attendees line) is written once, on
+  chunk 1**, so a late-joining attendee never reaches it — updating the attendees
+  field mid-meeting only affects a future meeting, not the one already in progress.
+  Documented as a sharp edge (DEVELOPMENT.md) rather than fixed, per the same A4
+  reasoning: rewriting the header after chunk 1 needs a full-note overwrite, the
+  riskiest code path in the app.
 
 ## P3 — Engineering health
 - [x] **L3. Fix stray `btn` element selector.** `btn, .btn` in CSS (meeting.html:69) —

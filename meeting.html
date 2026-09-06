@@ -674,6 +674,7 @@
     <span id="vaultDirStatus" style="font-size:11px;opacity:.75;align-self:center;"></span>
     <input class="api-input" style="width:200px;" type="text" id="hotwords" placeholder="Hotwords: Swetha, Kai, AFO, ..." title="Comma-separated names/jargon to help the ASR recognise them correctly">
     <input class="api-input" style="width:130px;" type="text" id="userName" placeholder="Your name (optional)" title="When a role lens is ticked, Action Required is filtered to that role — action items assigned specifically to this name are always kept regardless.">
+    <input class="api-input" style="width:180px;" type="text" id="attendees" placeholder="Attendees (optional)" title="Free-text list of who's in this meeting — written verbatim into the note header (Part 4a: A1), never sent to the LLM. Not remembered across meetings (Clear wipes it, and it's excluded from Save Config) so a roster from a past meeting can never be carried over and reported as attendance that didn't happen.">
     <button class="btn btn-start" id="recordBtn" onclick="toggleRecording()">Start Meeting</button>
     <button class="btn btn-clear" onclick="addToObsidian()" title="No Obsidian set up? This offers to download the meeting as a plain Markdown file instead.">Add to Obsidian</button>
     <span id="exportLog" style="font-size:11px;opacity:.75;align-self:center;" title=""></span>
@@ -1026,7 +1027,13 @@
       meetingContext, finalTranscript, pendingText,
       counters: { segmentCount, summaryCount, qaCount, totalWords, actionCount },
       obsidian: { notePath: obsidianNotePath, title: obsidianMeetingTitle, chunk: obsidianChunkNumber },
-      exportLedger // small (one entry per chunk sent, not per segment) — never trimmed, see D3
+      exportLedger, // small (one entry per chunk sent, not per segment) — never trimmed, see D3
+      // A1: crash-recovery WITHIN one meeting only — deliberately NOT in
+      // PERSISTED_FIELDS (see the #attendees input's title), so this is the
+      // one place it survives a reload. Additive/optional field, does NOT
+      // bump snap.v — an older reader restoring this snapshot just never
+      // reads it, same pattern as snapSummary's `m`/snapQA's `m`.
+      attendees: document.getElementById('attendees').value
     };
   }
 
@@ -1227,6 +1234,7 @@
     obsidianChunkNumber = snap.obsidian.chunk || 1;
     exportLedger = Array.isArray(snap.exportLedger) ? snap.exportLedger : [];
     updateExportLogUI();
+    document.getElementById('attendees').value = snap.attendees || ''; // absent on snapshots written before A1 existed
 
     document.getElementById('segCount').textContent = segmentCount;
     document.getElementById('summaryCount').textContent = summaryCount;
@@ -3607,6 +3615,7 @@
     document.getElementById('actionCount').textContent = '0';
     document.getElementById('wordCount').textContent = '0 words transcribed';
     document.getElementById('statusText').textContent = 'Ready';
+    document.getElementById('attendees').value = ''; // A1: never carries over into the next meeting
   }
 
   // ── Export to Obsidian ───────────────────────────────────────────────────
@@ -4092,8 +4101,16 @@
     const chunkBody = `## Segment ${obsidianChunkNumber} — ${timeStr}
 ${summaryBlocks.length ? `\n**Summary**\n${summaryBlocks.join('\n\n')}\n` : ''}${transcriptLines.length ? `\n**Transcript**\n${transcriptLines.join('\n\n')}\n` : ''}${qaBlocks.length ? `\n**Q&A**\n${qaBlocks.join('\n\n')}\n` : ''}${actionLines.length ? `\n**Action Items**\n${actionLines.join('\n')}\n` : ''}`;
 
+    // A1: deterministic, never sent to the LLM — a model could otherwise
+    // "assign" an owner from whoever's listed here, or invent attendance from
+    // a stale roster. Header only (not YAML frontmatter, to avoid escaping
+    // names with commas/colons in YAML); one line, collapsed to avoid a
+    // pasted multi-line list breaking the header's structure. A6: fixed at
+    // chunk 1 like the rest of the header — a late joiner never reaches it.
+    const attendeesLine = `Attendees: ${(document.getElementById('attendees').value.trim().replace(/\s*\n\s*/g, ', ')) || '[None recorded]'}`;
+
     const md = isFirstChunk
-      ? `---\ntitle: ${obsidianMeetingTitle}\ndate: ${dateStr}\ntags: [meeting, meetingmind]\n---\n\n# ${obsidianMeetingTitle}\n${dateStr} ${timeStr}\n\n${chunkBody}`
+      ? `---\ntitle: ${obsidianMeetingTitle}\ndate: ${dateStr}\ntags: [meeting, meetingmind]\n---\n\n# ${obsidianMeetingTitle}\n${dateStr} ${timeStr}\n${attendeesLine}\n\n${chunkBody}`
       : `\n\n${chunkBody}`; // appended chunks skip frontmatter/title — those only belong at the top of the file
 
     return { notePath, md, timeStr, append: !isFirstChunk, exportedEls: [...transcriptEls, ...summaryEls, ...qaEls, ...actionEls] };

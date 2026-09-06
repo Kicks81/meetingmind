@@ -890,9 +890,12 @@ machine), D15 (summaryQueue serialization), D33 (DOM-as-source-of-truth export p
   `runGenerateSummary`. `generateFinalSynthesis`, `answerQuestion`, and
   `suggestRoleQuestions` no longer read the capped tail for their own "whole
   meeting" context — they read the uncapped consolidated source instead (D37).
-- `.qa-answer` still exports via `.textContent`, so multi-bullet answers arrive in the
-  vault as one run-on line — the same defect V3 fixed for summaries (see D33).
 - One meeting at a time; no history browser (autosave holds only the latest session).
+- The note header (title/date/tags, and A1's `Attendees:` line) is written once, on
+  chunk 1, and never revisited — updating the attendees field mid-meeting only takes
+  effect for the *next* meeting, not the one already in progress. Same reasoning as
+  A4 (backlog): rewriting the header after chunk 1 needs a full-note overwrite, the
+  riskiest code path in the app, so this stays documented rather than fixed for now.
 - Evals cover core.js logic + a few DOM-wiring greps; audio/ASR paths need a live
   BytePlus key and are manually tested only.
 
