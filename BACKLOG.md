@@ -108,6 +108,48 @@ known zh defect is open. Every text-logic change still needs zh/en/mixed fixture
   dependency-free constraint). `addToObsidian()`'s no-vault dialog now offers a
   choice between `.doc` and `.md`.
 
+## P2 continued — re-audit findings (2026-09-06, IMPROVEMENT_LOOP.md's "P0+P1 empty" trigger)
+Compared against Granola's current feature set and checked BytePlus/OpenRouter for new
+capabilities since the last audit. Acknowledged and deliberately NOT queuing: Granola's
+Notion/Slack/HubSpot/Affinity/Attio/Zapier integrations (out of scope — this app's whole
+design center is a single user's own Obsidian vault, not a multi-integration SaaS) and
+OpenRouter's 2026 Workspaces/Analytics/video/image APIs (team/org and non-audio features,
+not relevant here).
+
+- [ ] **G6. BytePlus's own batch "ASR - Audio File" endpoint may be a better fit for
+  diarization than G4's OpenRouter route — or a genuinely different, more reliable
+  mechanism entirely.** Distinct from the streaming endpoint D39 investigated (which has
+  no diarization), BytePlus's separate async submit/poll batch endpoint
+  (`/api/v3/auc/bigmodel/submit`, resource `volc.seedasr.auc`) has real
+  `enable_speaker_info` (statistical diarization, ≤10 speakers, same caveat as Azure's
+  about acoustic variation) AND `enable_channel_split` (true stereo left/right channel
+  identity in the response). The latter is the more interesting option: if mic and
+  system audio were captured as separate stereo channels instead of being pre-mixed to
+  mono before ever reaching an ASR provider (a capture-pipeline change, not just an API
+  swap), channel identity would give a *deterministic* "me vs them" split rather than a
+  statistical guess — arguably a better answer to G4's ORIGINAL framing ("channel
+  separation... for cheap 2-way diarization") than what G4 actually shipped. Also
+  sidesteps D39's open question about OpenRouter's 60s-per-request timeout: this
+  endpoint accepts up to 5 hours / 512MB directly. Worth investigating as a G4
+  replacement or complement — not urgent, G4 already ships something that works.
+- [ ] **G7. Calendar integration / auto-detect upcoming meetings.** Granola's core
+  differentiator: syncs the user's calendar, reminds ~1 minute before any call with 2+
+  attendees, no manual click needed to start capturing. Large scope (OAuth against
+  Google/Outlook calendar APIs, a background polling mechanism) for a single-file,
+  no-build-step, no-backend app — flagging as aspirational/large rather than queuing it
+  at normal priority. The user already accepts the manual Start Meeting click as this
+  tool's tradeoff for staying dependency-free and local-first.
+- [ ] **G8. More meeting templates.** Granola ships 29+ (sales calls, investor pitches,
+  customer research, etc.); MeetingMind's `SUMMARY_TEMPLATES` has 7 (general, 1:1,
+  standup, client, interview, brainstorm, training). Cheap, well-scoped expansion —
+  same mechanism (D-entry references U5's original template design), just more entries.
+- [ ] **G9. Group/organize exported notes by company or project, not just by date.**
+  Granola auto-groups meetings by company; MeetingMind's vault path is
+  `{folder}/{YYYY-MM}/{date} - {title}` only. Could add an optional "Company/Project"
+  free-text field (same deterministic, never-sent-to-LLM pattern as A1's Attendees) that
+  reshapes the folder path when filled in, e.g. `{folder}/{Company}/{YYYY-MM}/{date} -
+  {title}`. Moderate scope, low risk given the A1 precedent to follow directly.
+
 ## P2b — Meeting Notes Specialist standard (audit 2026-08-18)
 Audited the exported note against an external "Meeting Notes Specialist" standard
 (a 4-section record: Date & Attendees / Decisions / Action Items / Open Questions,
