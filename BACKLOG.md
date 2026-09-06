@@ -119,6 +119,7 @@ it — CONTRACT.md independently arrived at the same rules, and the Decisions vs
 
 ## Done
 - [x] D34 — SSE streaming decoder boundary bugs: fix UTF-8 multi-byte corruption and silent line-dropping at chunk boundaries in `streamIntoElement`; extract `parseSseChunks` pure function to `core.js`
+- [x] D38 — Audio send-ordering (`sendQueue`/`queueSendAudioChunk`), reconnect-gap PCM ring buffer with gap marker, and a shared concurrency-capped queue (`backgroundExtractionQueue`) for `detectActionItems`/`maybeSplitSpeakers` with a persistent failure-streak badge
 - [x] **V3. Export carries markdown again, not run-on text.** `buildObsidianChunkMarkdown`
   read `.summary-text.textContent`, but that element holds `formatSummaryHtml` output —
   `- ` markers stripped, `**bold**` turned into `<mark>`, and `textContent` adds no

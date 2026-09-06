@@ -836,6 +836,48 @@ coverage, rather than living only inline in `meeting.html`.
 
 References: D13 (meetingContext cap), D30 (consolidated block mechanics).
 
+### D38 (2026-09-06): Send-ordering, reconnect-gap buffering, and a shared concurrency cap for background LLM calls
+Three related audio/LLM-pipeline hardening fixes, done together since each builds on the last:
+
+- **Send ordering.** `sendAudioChunk()` calls `gzip()` (async, variable duration) before
+  `asrSocket.send()`. With no serialization, a slower earlier chunk's gzip round-trip could
+  finish AFTER a faster later chunk — worst case, the terminal `isLast:true` frame sent at Stop
+  overtaking a still-compressing chunk and truncating the last seconds of a meeting. Fixed with
+  `sendQueue`, the same `.then(fn, fn)` chain pattern as `summaryQueue` (D15); every
+  `sendAudioChunk` call site now goes through `queueSendAudioChunk` instead.
+- **Reconnect-gap buffering.** The D10 reconnect loop deliberately keeps the Web Audio capture
+  graph running through a socket drop, but nothing caught the audio captured while `asrReady` was
+  false — it was silently dropped. Added a bounded (~6s) ring buffer of raw PCM16 (not
+  gzip-compressed, so nothing depends on `CompressionStream` timing during the very outage
+  causing the problem), flushed oldest-first through `queueSendAudioChunk` once `asrReady` flips
+  back to true. If the outage outlasted the buffer (a real, unrecoverable gap), a distinct
+  `.transcript-gap-marker` element is inserted — deliberately not `.transcript-segment.final`, so
+  export/corrections/DOM-rebuild logic (D33 pattern) never mistakes it for real speech.
+- **Shared concurrency cap for background extraction.** `detectActionItems()` and
+  `maybeSplitSpeakers()` fire fire-and-forget per utterance with no shared cap, competing with
+  each other and with `summaryQueue`'s calls for the same OpenRouter key's rate limit — a burst
+  of fast speech (or a post-reconnect backlog draining at once) could spawn many concurrent
+  requests. Routed both through `backgroundExtractionQueue`, a concurrency-ALLOWING (not
+  strictly-serial) queue capped at 3 in flight — deliberately NOT merged with `summaryQueue`,
+  which must stay strictly serialized (D15: concurrent summary streams would interleave DOM
+  writes and `meetingContext` mutations). Both functions already swallow their own errors
+  internally by design (a missed action item or speaker split shouldn't interrupt live
+  ingestion), so neither call ever actually rejects; failure tracking instead watches their
+  existing `diagCounters.actionFailures`/`splitFailures` counters (the latter newly added,
+  following the established E4 "counts only, hooked into the existing catch path without
+  altering behavior" pattern) for a before/after change per call. Three consecutive failures
+  shows a persistent (non-auto-dismissing) badge, dismissed by a real success or explicit user
+  dismissal — reusing the D-established persistent-banner pattern (`showExportFailureBanner`).
+
+Send-ordering and reconnect-gap buffering are audio-timing fixes no Node eval harness can prove;
+`node evals/run.mjs` only confirms the queueing/buffering structure is present, not that the
+race/gap is actually fixed live. Manual verification (real or simulated recording, Stop
+immediately after speaking; killing and restarting the relay mid-recording) is required before
+these are considered fully confirmed working.
+
+References: D10 (reconnect backoff), D13/D22/D23 (capture graph survives reconnect, ASR state
+machine), D15 (summaryQueue serialization), D33 (DOM-as-source-of-truth export pattern).
+
 ## 4. Known limitations / sharp edges (as of 2026-08-18)
 - The screen-share picker for system audio cannot be skipped (Chrome security);
   the no-picker path is a loopback *input* device (VB-Cable / Stereo Mix) chosen in

@@ -271,6 +271,19 @@
     border-left-color: #3fb950;
   }
 
+  /* TASK_12: deliberately distinct from .transcript-segment so it's never
+     mistaken for real spoken content by a glance at the panel. */
+  .transcript-gap-marker {
+    padding: 6px 12px;
+    background: #21262d;
+    border-radius: 8px;
+    border-left: 3px dashed #d29922;
+    font-size: 12px;
+    font-style: italic;
+    color: #d29922;
+    flex-shrink: 0;
+  }
+
   .transcript-time {
     font-size: 11px;
     color: #6e7681;
@@ -738,6 +751,21 @@
           title="Dismiss">✕</button>
 </div>
 
+<!-- TASK_14: persistent (non-auto-dismissing) badge for repeated background
+     action-item/speaker-split extraction failures — same display-toggle
+     pattern as #exportFailureBanner, but dismissible without a retry action
+     since the main transcript/summary pipeline is unaffected either way. -->
+<div id="backgroundExtractionFailureBanner" class="vault-hint-banner export-failure-banner"
+     style="display:none; background:#3d1f28; border:1px solid #f85149; color:#f0f0f0;
+            padding:10px 14px; border-radius:6px; margin-top:8px; position:relative;">
+  <span id="backgroundExtractionFailureBannerText" style="margin-right:8px;"></span>
+  <button id="backgroundExtractionFailureDismissBtn"
+          onclick="dismissBackgroundExtractionFailureBanner()"
+          style="position:absolute; top:6px; right:10px; background:none; border:none;
+                 color:#f0f0f0; font-size:16px; cursor:pointer;"
+          title="Dismiss">✕</button>
+</div>
+
 <div class="main">
   <!-- Transcription Panel -->
   <div class="panel">
@@ -890,6 +918,7 @@
     summaryCalls: 0, summaryFailures: 0,
     questionCalls: 0, questionFailures: 0,
     actionCalls: 0, actionFailures: 0,
+    splitFailures: 0, // TASK_14: maybeSplitSpeakers swallows its own errors (by design, "kept as one segment"), so this is the only external signal the concurrency queue's failure-streak tracking can observe without changing that function's own logic
   };
 
   const SUMMARY_WORD_THRESHOLD = 80;  // trigger summary every ~80 new words
@@ -1944,6 +1973,60 @@
     }
   }
 
+  // TASK_14: detectActionItems and maybeSplitSpeakers are both fired
+  // fire-and-forget per utterance with no shared cap, competing with each
+  // other AND with summaryQueue's calls for the same OpenRouter key's rate
+  // limit — a burst of fast speech (or a post-reconnect backlog) can fire many
+  // overlapping requests at once. This is a concurrency-ALLOWING queue (unlike
+  // summaryQueue's strict one-at-a-time serialization — D15's reasoning for
+  // that stays untouched, summaries must never interleave their DOM writes).
+  function createConcurrencyQueue(maxConcurrent) {
+    let active = 0;
+    const pending = [];
+    function runNext() {
+      if (active >= maxConcurrent || pending.length === 0) return;
+      active++;
+      const { fn, resolve, reject } = pending.shift();
+      fn().then(resolve, reject).finally(() => { active--; runNext(); });
+    }
+    return function enqueue(fn) {
+      return new Promise((resolve, reject) => { pending.push({ fn, resolve, reject }); runNext(); });
+    };
+  }
+  const backgroundExtractionQueue = createConcurrencyQueue(3); // detectActionItems + maybeSplitSpeakers share this; 3 is conservative per the review
+
+  // Consecutive-failure tracking for anything routed through
+  // backgroundExtractionQueue — reset on any success, persistent badge once it
+  // crosses a small threshold (the underlying pipeline, transcript/summary,
+  // is unaffected either way, but the user should know these features stopped).
+  let backgroundExtractionFailureStreak = 0;
+  const BACKGROUND_EXTRACTION_FAILURE_THRESHOLD = 3;
+  function recordBackgroundExtractionResult(ok, err) {
+    if (ok) {
+      backgroundExtractionFailureStreak = 0;
+      dismissBackgroundExtractionFailureBanner();
+      return;
+    }
+    backgroundExtractionFailureStreak++;
+    if (backgroundExtractionFailureStreak >= BACKGROUND_EXTRACTION_FAILURE_THRESHOLD) {
+      showBackgroundExtractionFailureBanner(err && err.message ? err.message : String(err));
+    }
+  }
+
+  // detectActionItems/maybeSplitSpeakers both catch and swallow their own
+  // errors internally (by design — a missed action item or split shouldn't
+  // interrupt live ingestion), so neither call's returned promise ever
+  // actually rejects. Their existing diagCounters.*Failures counters (already
+  // incremented in their own catch blocks, see E4/TASK_14 comments there) are
+  // the only external signal available without touching that internal logic
+  // — compare the counter before/after to infer a failure for streak-tracking.
+  async function runTrackingFailures(fn, readFailureCounter) {
+    const before = readFailureCounter();
+    await fn();
+    const failed = readFailureCounter() > before;
+    recordBackgroundExtractionResult(!failed, failed ? new Error('background extraction call failed — see console for details') : null);
+  }
+
   // ── Action-item detection (U11) ──────────────────────────────────────────
   // Runs alongside summary generation from processAsrResult so action items
   // show up promptly, without waiting for a full summary batch.
@@ -2551,6 +2634,67 @@
     asrSocket.send(buildFrame(MSG_AUDIO_ONLY_REQUEST, isLast ? 0b0010 : 0b0000, SER_NONE, COMP_GZIP, payload));
   }
 
+  // TASK_11: gzip() timing can vary per chunk (GC pause, main-thread congestion),
+  // so unqueued calls can land at asrSocket.send() out of order — most
+  // dangerously, the terminal isLast:true frame at Stop overtaking a still-
+  // compressing earlier chunk and truncating the last seconds of transcript.
+  // Same .then(fn, fn) serialization pattern as summaryQueue (one rejection
+  // doesn't break the chain for later chunks).
+  let sendQueue = Promise.resolve();
+  function queueSendAudioChunk(pcm16Bytes, isLast) {
+    const run = () => sendAudioChunk(pcm16Bytes, isLast);
+    sendQueue = sendQueue.then(run, run);
+    return sendQueue;
+  }
+
+  // TASK_12: the D10 reconnect loop deliberately keeps the Web Audio capture
+  // graph running through a socket drop (only the socket is rebuilt), but
+  // nothing used to catch the audio captured while asrReady is false — it was
+  // silently dropped. Buffer raw (uncompressed — nothing here should depend on
+  // CompressionStream timing during the very outage causing the problem) PCM16
+  // chunks instead, bounded to ~6s of 16kHz mono PCM16 (16000 samples/s * 2
+  // bytes/sample * 6s), with true ring semantics (drop oldest on overflow).
+  const RECONNECT_BUFFER_MAX_BYTES = 16000 * 2 * 6;
+  let reconnectBuffer = [];
+  let reconnectBufferBytes = 0;
+  let reconnectBufferOverflowed = false;
+
+  function bufferReconnectChunk(pcm16Bytes) {
+    reconnectBuffer.push(pcm16Bytes);
+    reconnectBufferBytes += pcm16Bytes.byteLength;
+    while (reconnectBufferBytes > RECONNECT_BUFFER_MAX_BYTES && reconnectBuffer.length > 1) {
+      const dropped = reconnectBuffer.shift();
+      reconnectBufferBytes -= dropped.byteLength;
+      reconnectBufferOverflowed = true; // some captured audio is genuinely gone
+    }
+  }
+
+  // Called once asrReady flips back to true (fresh connect or a successful
+  // reconnect) — flush oldest-first through the TASK_11 send queue so ordering
+  // relative to freshly-captured live audio is preserved.
+  function flushReconnectBuffer() {
+    const chunks = reconnectBuffer;
+    reconnectBuffer = [];
+    reconnectBufferBytes = 0;
+    for (const chunk of chunks) queueSendAudioChunk(chunk, false);
+    if (reconnectBufferOverflowed) {
+      insertTranscriptGapMarker();
+      reconnectBufferOverflowed = false;
+    }
+  }
+
+  // A distinct element (not .transcript-segment.final) so export, corrections,
+  // and DOM-rebuild logic (which all select on that class) never treat this as
+  // real spoken content.
+  function insertTranscriptGapMarker() {
+    const panel = document.getElementById('transcriptPanel');
+    const marker = document.createElement('div');
+    marker.className = 'transcript-gap-marker';
+    marker.textContent = '[audio gap — reconnect took longer than the buffer could hold]';
+    panel.appendChild(marker);
+    scheduleScrollPin(panel);
+  }
+
   function floatTo16BitPCM(float32Array) {
     const out = new Int16Array(float32Array.length);
     for (let i = 0; i < float32Array.length; i++) {
@@ -2611,9 +2755,11 @@
         pendingText += ' ' + text;
         finalTranscript += ' ' + text;
         checkSummaryTrigger();
-        detectActionItems(text).catch(err => console.error('detectActionItems failed:', err));
+        backgroundExtractionQueue(() => runTrackingFailures(() => detectActionItems(text), () => diagCounters.actionFailures))
+          .catch(err => console.error('detectActionItems failed:', err));
         checkObsidianAutoSplit();
-        maybeSplitSpeakers(text, segEl); // fire-and-forget — never blocks live ingestion
+        backgroundExtractionQueue(() => runTrackingFailures(() => maybeSplitSpeakers(text, segEl), () => diagCounters.splitFailures)) // never blocks live ingestion — still fire-and-forget, just concurrency-capped
+          .catch(err => console.error('maybeSplitSpeakers failed:', err));
       }
       finalizedUtteranceCount = i + 1;
     }
@@ -2759,8 +2905,12 @@
     // caller only sets true after this whole function resolves) so we start
     // streaming the instant BytePlus's session is ready, not later.
     const onCaptureChunk = (float32Chunk) => {
-      if (!asrReady || !asrSocket || asrSocket.readyState !== WebSocket.OPEN) return;
-      sendAudioChunk(floatTo16BitPCM(float32Chunk), false);
+      const pcm16 = floatTo16BitPCM(float32Chunk);
+      if (!asrReady || !asrSocket || asrSocket.readyState !== WebSocket.OPEN) {
+        bufferReconnectChunk(pcm16); // TASK_12: buffer instead of silently dropping during a reconnect gap
+        return;
+      }
+      queueSendAudioChunk(pcm16, false);
     };
     const capture = await createCaptureNode(audioCtx, onCaptureChunk);
     processorNode = capture.node;
@@ -2858,6 +3008,7 @@
           if (myEpoch !== asrEpoch) { socket.close(); reject(new Error('stale ASR session discarded')); return; }
           asrReady = true;
           lastAsrFrameAt = Date.now(); // fresh session — restart the watchdog clock
+          flushReconnectBuffer(); // TASK_12: replay anything buffered while this session was down
           resolve();
         } else if (msg.type === 'error') {
           reject(new Error('BytePlus ASR error: ' + msg.message));
@@ -2924,7 +3075,7 @@
     hideAudioLossBanner();
     const socketToClose = asrSocket; // capture before nulling, or the deferred close() below is a no-op
     if (socketToClose && socketToClose.readyState === WebSocket.OPEN) {
-      await sendAudioChunk(new Uint8Array(0), true); // still uses global asrSocket — send before nulling it
+      await queueSendAudioChunk(new Uint8Array(0), true); // still uses global asrSocket — send before nulling it
       setTimeout(() => socketToClose.close(), 1500);
     }
     asrSocket = null;
@@ -3167,6 +3318,7 @@
       ]);
       turns = MeetingCore.parseSpeakerSplit(raw, text);
     } catch (err) {
+      diagCounters.splitFailures++; // TASK_14 diagnostics only — behavior below is unchanged, still "kept as one segment"
       console.warn('Speaker-split check failed (kept as one segment):', err.message);
       return;
     }
@@ -3655,6 +3807,23 @@
 
   function dismissExportFailureBanner() {
     const el = document.getElementById('exportFailureBanner');
+    if (el) el.style.display = 'none';
+  }
+
+  // TASK_14: persistent badge for repeated background-extraction failures —
+  // shown only after several in a row, dismissed by a real success or an
+  // explicit user click, never on a timer (the underlying problem, e.g. an
+  // exhausted API key, won't have resolved itself just because time passed).
+  function showBackgroundExtractionFailureBanner(msg) {
+    const el = document.getElementById('backgroundExtractionFailureBanner');
+    const textEl = document.getElementById('backgroundExtractionFailureBannerText');
+    if (!el || !textEl) return;
+    textEl.textContent = `Background action-item/speaker-split extraction has been failing repeatedly: ${msg}`;
+    el.style.display = 'block';
+  }
+
+  function dismissBackgroundExtractionFailureBanner() {
+    const el = document.getElementById('backgroundExtractionFailureBanner');
     if (el) el.style.display = 'none';
   }
 
